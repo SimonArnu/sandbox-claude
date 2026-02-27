@@ -349,7 +349,7 @@ parse_domains_file() {
 
 # Install squid-openssl in the VM if not present
 ensure_squid_installed() {
-  vm_run bash << 'SQUID_INSTALL'
+  vm_run sudo bash << 'SQUID_INSTALL'
 set -e
 if command -v squid &>/dev/null; then
   echo "Squid already installed"
@@ -365,12 +365,14 @@ SQUID_INSTALL
 
 # Write base squid.conf with peek/splice SNI filtering config
 deploy_squid_config() {
-  vm_run bash << 'SQUID_CONF'
+  vm_run sudo bash << 'SQUID_CONF'
 set -e
 
 CONF_DIR="/etc/squid/sandbox"
 CERT_DIR="/etc/squid/ssl"
 mkdir -p "$CONF_DIR/containers" "$CERT_DIR"
+# Ensure at least one .conf file exists so the glob include always succeeds
+touch "$CONF_DIR/containers/000-placeholder.conf"
 
 # Generate a dummy self-signed cert (required by Squid ssl-bump even without MITM)
 if [ ! -f "$CERT_DIR/squid-dummy.pem" ]; then
@@ -391,24 +393,33 @@ fi
 cat > /etc/squid/squid.conf << 'EOF'
 # Sandbox Squid — SNI-based transparent HTTPS filtering (peek/splice, no MITM)
 
-http_port 3129 transparent ssl-bump \
+# Transparent HTTPS interception port (containers are redirected here via iptables)
+https_port 3129 intercept ssl-bump \
   cert=/etc/squid/ssl/squid-dummy-combined.pem \
   generate-host-certificates=off \
   dynamic_cert_mem_cache_size=4MB
 
+# Forward-proxy port on localhost only (required by Squid for internal URL handling)
+http_port 127.0.0.1:3128
+
 sslcrtd_program /usr/lib/squid/security_file_certgen -s /var/lib/squid/ssl_db -M 4MB
 
-# Peek at TLS ClientHello to read SNI, then splice (pass-through) or terminate
+# Peek at TLS ClientHello to read SNI
 acl step1 at_step SslBump1
 
-ssl_bump peek step1
-ssl_bump splice all
-
-# Include per-container ACLs (domain filtering rules)
+# Include per-container ACLs (ssl_bump splice rules for allowed domains)
 include /etc/squid/sandbox/containers/*.conf
 
-# Default: deny everything that reaches Squid (only restricted containers are redirected here)
-http_access deny all
+# SSL bump steps:
+# 1. Peek at ClientHello to read SNI (step1)
+# 2. Per-container rules splice allowed domains (from included configs)
+# 3. Default: terminate any connection not explicitly spliced
+ssl_bump peek step1
+ssl_bump terminate all
+
+# Allow intercepted traffic through to the ssl-bump stage
+# (actual filtering is done via ssl_bump rules, not http_access)
+http_access allow all
 
 # Logging
 access_log daemon:/var/log/squid/access.log squid
@@ -418,6 +429,7 @@ cache_log /var/log/squid/cache.log
 cache deny all
 
 # Misc
+visible_hostname sandbox-proxy
 pid_filename /run/squid.pid
 shutdown_lifetime 3 seconds
 EOF
@@ -436,31 +448,30 @@ setup_container_domain_filter() {
   local parsed_domains
   parsed_domains=$(parse_domains_file "$domains_file")
 
-  vm_run bash -c "
+  vm_run sudo bash -c "
     cat > /etc/squid/sandbox/containers/${container}.domains << 'DOMAINS'
 ${parsed_domains}
 DOMAINS
   "
 
-  vm_run bash -c "
+  vm_run sudo bash -c "
     cat > /etc/squid/sandbox/containers/${container}.conf << ACL_EOF
 acl ${container}_src src ${container_ip}/32
-acl ${container}_domains dstdomain \"/etc/squid/sandbox/containers/${container}.domains\"
-http_access allow ${container}_src ${container}_domains
-http_access deny ${container}_src
+acl ${container}_domains ssl::server_name \"/etc/squid/sandbox/containers/${container}.domains\"
+ssl_bump splice ${container}_src ${container}_domains
 ACL_EOF
   "
 
-  vm_exec "squid -k reconfigure 2>/dev/null || systemctl reload squid 2>/dev/null || true"
+  vm_exec "sudo squid -k reconfigure 2>/dev/null || sudo systemctl reload squid 2>/dev/null || true"
 }
 
 # Remove per-container Squid ACL and domains file, then reload
 cleanup_container_domain_filter() {
   local container="$1"
   vm_exec "
-    rm -f /etc/squid/sandbox/containers/${container}.conf \
+    sudo rm -f /etc/squid/sandbox/containers/${container}.conf \
           /etc/squid/sandbox/containers/${container}.domains
-    squid -k reconfigure 2>/dev/null || systemctl reload squid 2>/dev/null || true
+    sudo squid -k reconfigure 2>/dev/null || sudo systemctl reload squid 2>/dev/null || true
   " 2>/dev/null || true
 }
 
@@ -468,9 +479,9 @@ cleanup_container_domain_filter() {
 redirect_container_to_squid() {
   local container_ip="$1"
   vm_exec "
-    iptables -t nat -A PREROUTING -s '${container_ip}/32' -p tcp --dport 443 \
+    sudo iptables -t nat -A PREROUTING -s '${container_ip}/32' -p tcp --dport 443 \
       -j REDIRECT --to-port ${SQUID_PORT}
-    iptables -t nat -A PREROUTING -s '${container_ip}/32' -p tcp --dport 80 \
+    sudo iptables -t nat -A PREROUTING -s '${container_ip}/32' -p tcp --dport 80 \
       -j REDIRECT --to-port ${SQUID_PORT}
   "
 }
@@ -479,8 +490,8 @@ redirect_container_to_squid() {
 remove_container_squid_redirect() {
   local container_ip="$1"
   vm_exec "
-    iptables -t nat -S PREROUTING 2>/dev/null | grep '${container_ip}' | while read -r rule; do
-      iptables -t nat \$(echo \"\$rule\" | sed 's/^-A/-D/')
+    sudo iptables -t nat -S PREROUTING 2>/dev/null | grep '${container_ip}' | while read -r rule; do
+      sudo iptables -t nat \$(echo \"\$rule\" | sed 's/^-A/-D/')
     done
   " 2>/dev/null || true
 }

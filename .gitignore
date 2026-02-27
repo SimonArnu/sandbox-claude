@@ -20,3 +20,7 @@
 .serena/
 
 TODO.md
+
+# BATS test helper libraries (installed locally)
+tests/test_helper/bats-support/
+tests/test_helper/bats-assert/

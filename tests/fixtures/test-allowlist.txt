@@ -1,0 +1,3 @@
+# Test allowlist — minimal set for integration tests
+api.anthropic.com
+registry.npmjs.org

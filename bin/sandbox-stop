@@ -29,8 +29,8 @@ CONTAINER_IP=$(vm_exec "
 if [[ -n "$CONTAINER_IP" ]]; then
   remove_container_squid_redirect "$CONTAINER_IP"
   vm_exec "
-    iptables -S FORWARD 2>/dev/null | grep '${CONTAINER_IP}' | while read -r rule; do
-      iptables \$(echo \"\$rule\" | sed 's/^-A/-D/')
+    sudo iptables -S FORWARD 2>/dev/null | grep '${CONTAINER_IP}' | while read -r rule; do
+      sudo iptables \$(echo \"\$rule\" | sed 's/^-A/-D/')
     done
   " 2>/dev/null || true
 fi
