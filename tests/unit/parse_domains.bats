@@ -86,6 +86,24 @@ EOF
   assert_output --partial "anthropic-default.txt"
 }
 
+@test "parse_domains_file: file with only comments produces empty output" {
+  cat > "${TEST_TMPDIR}/comments-only.txt" << 'EOF'
+# comment one
+# comment two
+# comment three
+EOF
+  run parse_domains_file "${TEST_TMPDIR}/comments-only.txt"
+  assert_success
+  assert_output ""
+}
+
+@test "parse_domains_file: empty file produces empty output" {
+  touch "${TEST_TMPDIR}/empty.txt"
+  run parse_domains_file "${TEST_TMPDIR}/empty.txt"
+  assert_success
+  assert_output ""
+}
+
 @test "bundled anthropic-default.txt parses without errors" {
   run parse_domains_file "${PROJECT_ROOT}/domains/anthropic-default.txt"
   assert_success

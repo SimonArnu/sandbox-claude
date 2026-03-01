@@ -27,3 +27,9 @@ load '../test_helper/common'
   run container_name ""
   assert_failure
 }
+
+@test "container_name: name with dots" {
+  run container_name "v1.2.3"
+  assert_success
+  assert_output "agent-v1.2.3"
+}

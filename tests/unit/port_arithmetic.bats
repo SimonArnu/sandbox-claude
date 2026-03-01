@@ -1,6 +1,12 @@
 #!/usr/bin/env bats
 load '../test_helper/common'
 
+@test "ssh_port: slot 0 returns 2200" {
+  run ssh_port 0
+  assert_success
+  assert_output "2200"
+}
+
 @test "ssh_port: slot 1 returns 2201" {
   run ssh_port 1
   assert_success

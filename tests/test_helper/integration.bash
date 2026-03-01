@@ -10,7 +10,7 @@ _test_suite_name() {
   basename "${BATS_TEST_FILENAME}" .bats | tr '_' '-'
 }
 
-TEST_CONTAINER_PREFIX="test-$$"
+TEST_CONTAINER_PREFIX="test-${BATS_ROOT_PID:-$$}"
 
 # Create a test container. Pass extra flags as arguments.
 # Usage: create_test_container [--restrict-domains] [--domains-file /path]
