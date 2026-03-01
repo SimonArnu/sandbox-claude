@@ -81,8 +81,8 @@ for c in $CONTAINERS; do
     fi
 
     # Claude auth
-    if incus exec "$c" -- test -d /root/.claude 2>/dev/null && \
-       incus exec "$c" -- bash -c 'ls /root/.claude/.credentials* 2>/dev/null || ls /root/.claude/auth* 2>/dev/null' &>/dev/null; then
+    if incus exec "$c" -- test -d /home/ubuntu/.claude 2>/dev/null && \
+       incus exec "$c" -- bash -c 'ls /home/ubuntu/.claude/.credentials* 2>/dev/null || ls /home/ubuntu/.claude/auth* 2>/dev/null' &>/dev/null; then
       claude_status="auth'd"
     else
       claude_status="no-auth"

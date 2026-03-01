@@ -13,14 +13,14 @@ rm /tmp/packages-microsoft-prod.deb
 apt-get update
 apt-get install -y dotnet-sdk-8.0
 
-# Coverage tool
-dotnet tool install --global dotnet-coverage
+# Coverage tool (installed as ubuntu)
+su - ubuntu -c 'dotnet tool install --global dotnet-coverage'
 
-# SonarScanner for quality analysis
-dotnet tool install --global dotnet-sonarscanner
+# SonarScanner for quality analysis (installed as ubuntu)
+su - ubuntu -c 'dotnet tool install --global dotnet-sonarscanner'
 
 # Add dotnet tools to PATH
-echo 'export PATH=$PATH:$HOME/.dotnet/tools' >> /root/.bashrc
+echo 'export PATH=$PATH:$HOME/.dotnet/tools' >> /home/ubuntu/.bashrc
 
 # Formatting: built-in via `dotnet format`, no install needed
 # Security analyzers: installed per-project via NuGet

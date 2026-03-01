@@ -6,11 +6,11 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "Installing Python stack..."
 
-# uv — fast package installer and resolver
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# uv — fast package installer and resolver (installed as ubuntu)
+su - ubuntu -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
 
-# Poetry — dependency management
-curl -sSL https://install.python-poetry.org | python3 -
+# Poetry — dependency management (installed as ubuntu)
+su - ubuntu -c 'curl -sSL https://install.python-poetry.org | python3 -'
 
 # Linting + formatting
 pip3 install --break-system-packages ruff

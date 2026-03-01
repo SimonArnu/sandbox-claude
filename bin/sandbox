@@ -42,16 +42,18 @@ build_session_cmd() {
     exec_prefix=""
   fi
 
+  local user_flags="--user ${SANDBOX_UID} --group ${SANDBOX_GID} --cwd ${WORKSPACE_DIR} --env HOME=${SANDBOX_USER_HOME}"
+
   case "$MODE" in
     shell)
-      echo "${exec_prefix} incus exec ${container} -- bash"
+      echo "${exec_prefix} incus exec ${container} ${user_flags} -- bash --login"
       ;;
     claude)
-      echo "${exec_prefix} incus exec ${container} -- bash -c 'cd ${WORKSPACE_DIR} 2>/dev/null; claude --dangerously-skip-permissions'"
+      echo "${exec_prefix} incus exec ${container} ${user_flags} -- bash --login -c 'claude --dangerously-skip-permissions'"
       ;;
     cmd)
       local escaped_cmd="${CMD//\'/\'\\\'\'}"
-      echo "${exec_prefix} incus exec ${container} -- bash -c '${escaped_cmd}'"
+      echo "${exec_prefix} incus exec ${container} ${user_flags} -- bash --login -c '${escaped_cmd}'"
       ;;
   esac
 }

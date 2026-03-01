@@ -164,6 +164,10 @@ for keyfile in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub ~/.ssh/id_ecdsa.pub; do
   fi
 done
 if [[ -n "$HOST_PUBKEY" ]]; then
+  # Inject for ubuntu user (primary SSH access)
+  echo "$HOST_PUBKEY" | vm_run incus exec "${CONTAINER}" -- \
+    bash -c "cat >> ${SANDBOX_USER_HOME}/.ssh/authorized_keys && chmod 600 ${SANDBOX_USER_HOME}/.ssh/authorized_keys && chown ${SANDBOX_UID}:${SANDBOX_GID} ${SANDBOX_USER_HOME}/.ssh/authorized_keys"
+  # Keep root too for emergency access
   echo "$HOST_PUBKEY" | vm_run incus exec "${CONTAINER}" -- \
     bash -c 'cat >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys'
   ok "Host SSH key injected"
@@ -212,12 +216,13 @@ fi
 # ── Clone repo ──────────────────────────────────────────────────────
 if [[ -n "$REPO" ]]; then
   info "Cloning repository..."
-  CLONE_ARGS=(git clone)
-  [[ -n "$BRANCH" ]] && CLONE_ARGS+=(--branch "$BRANCH")
-  CLONE_ARGS+=("$REPO" "$WORKSPACE_DIR")
+  CLONE_ARGS="git clone"
+  [[ -n "$BRANCH" ]] && CLONE_ARGS+=" --branch ${BRANCH}"
+  CLONE_ARGS+=" ${REPO} ${WORKSPACE_DIR}"
 
-  vm_run incus exec "${CONTAINER}" -- env SSH_AUTH_SOCK=/run/ssh-agent.sock \
-    "${CLONE_ARGS[@]}" \
+  # Configure safe.directory for ubuntu user and clone as ubuntu
+  vm_run incus exec "${CONTAINER}" --user ${SANDBOX_UID} --group ${SANDBOX_GID} --env HOME=${SANDBOX_USER_HOME} -- \
+    bash -c "git config --global safe.directory '*' && SSH_AUTH_SOCK=/run/ssh-agent.sock ${CLONE_ARGS}" \
     || die "Git clone failed. Check SSH key and repo access."
   ok "Repository cloned"
 fi
@@ -233,11 +238,10 @@ if [[ "$RESTRICT_DOMAINS" == "yes" ]]; then
 else
   echo "  Domains:   open (all HTTPS allowed)"
 fi
-echo "  SSH:       ssh -o StrictHostKeyChecking=no -p ${SSH_P} root@localhost"
-echo "  VS Code:   code --remote ssh-remote+root@localhost:${SSH_P} ${WORKSPACE_DIR}"
+echo "  SSH:       ssh -o StrictHostKeyChecking=no -p ${SSH_P} ubuntu@localhost"
+echo "  VS Code:   code --remote ssh-remote+ubuntu@localhost:${SSH_P} ${WORKSPACE_DIR}"
 echo "  App:       http://localhost:${APP_P}"
 echo "  Alt:       http://localhost:${ALT_P}"
 echo ""
 echo "  Shell:     sandbox ${NAME}"
 echo "  Claude:    sandbox ${NAME} --claude"
-[[ -z "$(get_metadata "$CONTAINER" "repo")" ]] || echo "  Login:     sandbox-login ${NAME}"

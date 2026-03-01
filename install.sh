@@ -32,13 +32,36 @@ done
 
 echo ""
 
-# Check if DEST is in PATH
+# Ensure DEST is in PATH
 if [[ ":$PATH:" != *":${DEST}:"* ]]; then
-  echo "WARNING: ${DEST} is not in your PATH."
-  echo "Add this to your shell profile (~/.zshrc or ~/.bashrc):"
-  echo ""
-  echo "  export PATH=\"\$PATH:${DEST}\""
-  echo ""
+  SHELL_RC=""
+  if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$(basename "${SHELL:-}")" == "zsh" ]]; then
+    SHELL_RC="${HOME}/.zshrc"
+  elif [[ -f "${HOME}/.bashrc" ]]; then
+    SHELL_RC="${HOME}/.bashrc"
+  elif [[ -f "${HOME}/.bash_profile" ]]; then
+    SHELL_RC="${HOME}/.bash_profile"
+  fi
+
+  if [[ -n "$SHELL_RC" ]]; then
+    EXPORT_LINE="export PATH=\"\$HOME/.local/bin:\$PATH\""
+    if ! grep -qF '.local/bin' "$SHELL_RC" 2>/dev/null; then
+      echo "" >> "$SHELL_RC"
+      echo "# Added by sandbox-claude installer" >> "$SHELL_RC"
+      echo "$EXPORT_LINE" >> "$SHELL_RC"
+      echo "Added ${DEST} to PATH in ${SHELL_RC}"
+      echo "Run 'source ${SHELL_RC}' or open a new terminal to apply."
+    else
+      echo "${DEST} already referenced in ${SHELL_RC} but not in current PATH."
+      echo "Run 'source ${SHELL_RC}' or open a new terminal to apply."
+    fi
+  else
+    echo "WARNING: ${DEST} is not in your PATH and could not detect shell config."
+    echo "Add this to your shell profile:"
+    echo ""
+    echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo ""
+  fi
 fi
 
 echo "Done. Run 'sandbox-setup' to initialise the infrastructure."

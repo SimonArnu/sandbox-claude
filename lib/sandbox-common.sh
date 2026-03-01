@@ -9,6 +9,10 @@ SANDBOX_MACHINE="sandbox"
 SANDBOX_KEY_DIR="${HOME}/.sandbox/keys"
 SANDBOX_ENV_FILE="${HOME}/.sandbox/env"
 WORKSPACE_DIR="/workspace/project"
+SANDBOX_USER="ubuntu"
+SANDBOX_UID=1000
+SANDBOX_GID=1000
+SANDBOX_USER_HOME="/home/ubuntu"
 SANDBOX_DOMAINS_DIR="${SCRIPT_DIR}/../domains"
 SANDBOX_DEFAULT_DOMAINS="${SANDBOX_DOMAINS_DIR}/anthropic-default.txt"
 SANDBOX_USER_DOMAINS="${HOME}/.sandbox/allowed-domains.txt"
@@ -206,7 +210,7 @@ deploy_key_cleanup() {
 
   if [[ -n "$key_id" ]]; then
     info "Removing deploy key from GitHub (${nwo})..."
-    gh repo deploy-key delete "$key_id" -R "$nwo" --yes 2>/dev/null || true
+    gh repo deploy-key delete "$key_id" -R "$nwo" 2>/dev/null || true
   fi
 
   # Delete local key pair
@@ -217,9 +221,8 @@ deploy_key_cleanup() {
 ssh_agent_setup() {
   local container="$1"
   local key_path="$2"  # Host path to private key
-  local socket_path="/tmp/sandbox-agent-${container}.sock"
 
-  # Copy key into sandbox environment temporarily
+  # Copy key into sandbox VM temporarily
   local vm_key="/tmp/sandbox-key-${container}"
   if [[ "$SANDBOX_PLATFORM" == "macos" ]]; then
     orb run -m "${SANDBOX_MACHINE}" tee "$vm_key" < "$key_path" >/dev/null
@@ -228,35 +231,27 @@ ssh_agent_setup() {
   fi
   vm_exec "chmod 600 ${vm_key}"
 
-  # Start dedicated ssh-agent and add key
-  vm_exec "
-    # Kill any existing agent for this container
-    if [ -f /tmp/sandbox-agent-${container}.pid ]; then
-      kill \$(cat /tmp/sandbox-agent-${container}.pid) 2>/dev/null || true
-      rm -f /tmp/sandbox-agent-${container}.pid
-    fi
-    rm -f ${socket_path}
+  # Push deploy key into the container for the ubuntu user
+  vm_exec "incus file push ${vm_key} ${container}${SANDBOX_USER_HOME}/.ssh/deploy-key --uid=${SANDBOX_UID} --gid=${SANDBOX_GID} --mode=600"
+  vm_exec "rm -f ${vm_key}"
 
-    eval \$(ssh-agent -a ${socket_path})
-    echo \$SSH_AGENT_PID > /tmp/sandbox-agent-${container}.pid
-    SSH_AUTH_SOCK=${socket_path} ssh-add ${vm_key}
+  # Configure SSH to use deploy key for github.com
+  vm_exec "incus exec ${container} -- bash -c 'cat > ${SANDBOX_USER_HOME}/.ssh/config << SSHEOF
+Host github.com
+  IdentityFile ${SANDBOX_USER_HOME}/.ssh/deploy-key
+  StrictHostKeyChecking accept-new
+SSHEOF
+chmod 600 ${SANDBOX_USER_HOME}/.ssh/config
+chown ${SANDBOX_UID}:${SANDBOX_GID} ${SANDBOX_USER_HOME}/.ssh/config'"
 
-    # Remove the temporary key from disk
-    rm -f ${vm_key}
-  "
+  # Start SSH agent inside the container (as root, then make socket accessible to ubuntu)
+  vm_exec "incus exec ${container} -- bash -c 'eval \$(ssh-agent -a /run/ssh-agent.sock) && echo \$SSH_AGENT_PID > /run/ssh-agent.pid && chmod 777 /run/ssh-agent.sock && ssh-add ${SANDBOX_USER_HOME}/.ssh/deploy-key'"
 
-  # Mount the socket into the container
-  vm_exec "
-    incus config device add ${container} ssh-agent disk \
-      source=${socket_path} \
-      path=/run/ssh-agent.sock
-  "
-
-  # Set SSH_AUTH_SOCK in container's bashrc
+  # Set SSH_AUTH_SOCK in ubuntu user's bashrc
   vm_exec "
     incus exec ${container} -- bash -c '
-      grep -q SSH_AUTH_SOCK /root/.bashrc 2>/dev/null || \
-        echo \"export SSH_AUTH_SOCK=/run/ssh-agent.sock\" >> /root/.bashrc
+      grep -q SSH_AUTH_SOCK ${SANDBOX_USER_HOME}/.bashrc 2>/dev/null || \
+        echo \"export SSH_AUTH_SOCK=/run/ssh-agent.sock\" >> ${SANDBOX_USER_HOME}/.bashrc
     '
   "
 }
@@ -264,6 +259,10 @@ ssh_agent_setup() {
 ssh_agent_cleanup() {
   local container="$1"
 
+  # Kill agent inside the container
+  vm_exec "incus exec ${container} -- bash -c 'if [ -f /run/ssh-agent.pid ]; then kill \$(cat /run/ssh-agent.pid) 2>/dev/null; fi; rm -f /run/ssh-agent.pid /run/ssh-agent.sock'" 2>/dev/null || true
+
+  # Also clean up old-style VM-side agent (backward compat)
   vm_exec "
     if [ -f /tmp/sandbox-agent-${container}.pid ]; then
       kill \$(cat /tmp/sandbox-agent-${container}.pid) 2>/dev/null || true
@@ -295,7 +294,7 @@ inject_env() {
     env_lines+=("$e")
   done
 
-  # Inject into container's /root/.bashrc
+  # Inject into container's ubuntu user bashrc
   if [[ ${#env_lines[@]} -gt 0 ]]; then
     local export_block=""
     for line in "${env_lines[@]}"; do
@@ -307,7 +306,7 @@ inject_env() {
       fi
     done
     vm_exec "
-      incus exec ${container} -- bash -c 'echo -e \"${export_block}\" >> /root/.bashrc'
+      incus exec ${container} -- bash -c 'echo -e \"${export_block}\" >> ${SANDBOX_USER_HOME}/.bashrc'
     "
   fi
 }

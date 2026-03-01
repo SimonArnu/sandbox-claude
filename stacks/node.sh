@@ -13,8 +13,8 @@ echo "Installing Node stack..."
 # Alt package managers
 npm install -g pnpm yarn
 
-# Bun runtime
-curl -fsSL https://bun.sh/install | bash
+# Bun runtime (installed as ubuntu — lives under /home/ubuntu/.bun)
+su - ubuntu -c 'curl -fsSL https://bun.sh/install | bash'
 
 # Coverage (uses V8 native coverage)
 npm install -g c8

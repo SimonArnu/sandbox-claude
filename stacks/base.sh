@@ -22,24 +22,36 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-# Claude Code (native installer — self-contained, no Node.js needed)
-curl -fsSL https://claude.ai/install.sh | bash
+# Create non-root user for running sessions (may already exist in Ubuntu images)
+if ! id ubuntu &>/dev/null; then
+  useradd -m -s /bin/bash -u 1000 ubuntu
+fi
+echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ubuntu
+chmod 440 /etc/sudoers.d/ubuntu
+
+# Claude Code (installed as ubuntu — credentials live under /home/ubuntu)
+su - ubuntu -c 'curl -fsSL https://claude.ai/install.sh | bash'
 # Ensure claude is on PATH for non-interactive shells (incus exec)
-ln -sf /root/.local/bin/claude /usr/local/bin/claude
+ln -sf /home/ubuntu/.local/bin/claude /usr/local/bin/claude
 
 # SSH config — key-based auth only (host key injected by sandbox-create)
-mkdir -p /run/sshd /root/.ssh
-chmod 700 /root/.ssh
+mkdir -p /run/sshd /root/.ssh /home/ubuntu/.ssh
+chmod 700 /root/.ssh /home/ubuntu/.ssh
+chown ubuntu:ubuntu /home/ubuntu/.ssh
 sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 passwd -l root
+
+# Docker group for ubuntu user
+usermod -aG docker ubuntu
 
 # Enable services
 systemctl enable docker
 systemctl enable ssh
 
-# Create workspace
+# Create workspace (owned by ubuntu)
 mkdir -p /workspace
+chown ubuntu:ubuntu /workspace
 
 # Cleanup
 apt-get clean

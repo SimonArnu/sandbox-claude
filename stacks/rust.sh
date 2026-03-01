@@ -6,14 +6,18 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "Installing Rust stack..."
 
-# Rust toolchain (stable) — installs rustc, cargo, clippy, rustfmt
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
+# Build dependencies for cargo-tarpaulin (needs openssl-sys)
+apt-get update
+apt-get install -y pkg-config libssl-dev
+apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Rust toolchain (stable, installed as ubuntu) — installs rustc, cargo, clippy, rustfmt
+su - ubuntu -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
 
 # Coverage
-cargo install cargo-tarpaulin
+su - ubuntu -c 'source $HOME/.cargo/env && cargo install cargo-tarpaulin'
 
 # Security auditing
-cargo install cargo-audit
+su - ubuntu -c 'source $HOME/.cargo/env && cargo install cargo-audit'
 
 echo "Rust stack complete"

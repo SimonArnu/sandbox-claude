@@ -189,10 +189,25 @@ build_golden() {
     vm_exec "sleep 3"
   fi
 
+  # Inject any custom CA certs from the VM into the container
+  # (handles corporate TLS-intercepting proxies like Cloudflare Gateway, Zscaler, etc.)
+  vm_exec "
+    # Extract non-standard CA certs by probing a well-known HTTPS site
+    PROBE_CERT=\$(echo | openssl s_client -showcerts -connect github.com:443 2>/dev/null \
+      | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/' | tail -n +1)
+    ISSUER=\$(echo \"\$PROBE_CERT\" | openssl x509 -noout -issuer 2>/dev/null || true)
+    if echo \"\$ISSUER\" | grep -qiE 'Cloudflare|Zscaler|Fortinet|Palo Alto|BlueCoat|Symantec Web|Netskope'; then
+      # Corporate proxy detected — extract the CA cert (last cert in chain)
+      echo \"\$PROBE_CERT\" | awk 'BEGIN{n=0} /BEGIN CERTIFICATE/{n++; cert=\"\"} {cert=cert\"\n\"\$0} /END CERTIFICATE/{certs[n]=cert} END{print certs[n]}' \
+        | incus exec ${golden_name} -- tee /usr/local/share/ca-certificates/corporate-proxy.crt > /dev/null
+      incus exec ${golden_name} -- update-ca-certificates
+    fi
+  "
+
   # Run the stack script inside the container
   info "Running ${stack}.sh inside ${golden_name}..."
   vm_run bash -c "
-    cat /dev/stdin | incus exec ${golden_name} -- bash
+    cat | incus exec ${golden_name} -- bash
   " < "$stack_script"
 
   # Stop and snapshot

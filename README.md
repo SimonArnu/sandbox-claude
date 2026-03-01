@@ -49,16 +49,13 @@ sandbox-setup               # Takes ~10 minutes the first time
 # 3. Create a sandbox for your project
 sandbox-create my-project git@github.com:me/my-repo.git --stack rust
 
-# 4. Authenticate Claude inside the container
-sandbox-login my-project
-
-# 5. Open a shell to verify everything
+# 4. Open a shell to verify everything
 sandbox my-project
 
-# 6. Run Claude Code in YOLO mode
+# 5. Run Claude Code in YOLO mode (authenticates on first launch)
 sandbox my-project --claude
 
-# 7. When done, stop or destroy
+# 6. When done, stop or destroy
 sandbox-stop my-project       # Stop (preserves container, can restart)
 sandbox-stop my-project --rm  # Destroy (removes container + deploy key)
 ```
@@ -180,7 +177,6 @@ Run `sudo sandbox-linux-prereqs` to install everything in this table automatical
 | `sandbox` | Session entry point: shell, Claude, or arbitrary command |
 | `sandbox-list` | List all containers with health status |
 | `sandbox-expose` | Expose additional ports bidirectionally |
-| `sandbox-login` | Authenticate Claude Code via OAuth inside a container |
 | `sandbox-stop` | Stop and optionally remove a container |
 | `sandbox-nuke` | Destroy all agent containers (nuclear option) |
 
@@ -406,25 +402,6 @@ sandbox-expose proj-alpha 5432 udp
 # Expose both TCP and UDP
 sandbox-expose proj-alpha 5432 both
 ```
-
----
-
-### sandbox-login
-
-Authenticate Claude Code via OAuth inside a container.
-
-```
-sandbox-login <name>
-```
-
-**Steps:**
-
-1. Adds a temporary Incus proxy device for the OAuth callback port
-2. Runs `claude login` inside the container via `incus exec`
-3. You complete the OAuth flow in your browser (macOS) or locally (Linux)
-4. The auth token is stored in the container's `~/.claude/` directory (persists across restarts)
-5. Removes the temporary proxy device
-6. Confirms success
 
 ---
 
@@ -927,8 +904,8 @@ sandbox-create proj-alpha git@github.com:me/alpha.git --stack rust
 **Symptom:** Claude reports it is not authenticated.
 
 ```bash
-# Re-run the login flow
-sandbox-login proj-alpha
+# Re-run Claude to trigger login
+sandbox proj-alpha --claude
 
 # Verify auth token exists
 sandbox proj-alpha --cmd "ls -la ~/.claude/"
@@ -1007,7 +984,6 @@ sandbox-claude/
 |   +-- sandbox-nuke         # Destroy all containers
 |   +-- sandbox-list         # List containers with health
 |   +-- sandbox-expose       # Expose extra ports (bidirectional)
-|   +-- sandbox-login        # Claude OAuth login flow
 +-- domains/
 |   +-- anthropic-default.txt  # Default domain allowlist (~190 domains)
 +-- lib/
