@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Check BATS is installed
 if ! command -v bats &>/dev/null; then
@@ -19,6 +20,32 @@ if [ ! -d "${SCRIPT_DIR}/test_helper/bats-support" ] || [ ! -d "${SCRIPT_DIR}/te
   exit 1
 fi
 
+# ── Cleanup: stop and remove any test containers left behind ────────
+# Runs on EXIT (success, failure, or signal) to prevent leaked containers.
+cleanup_test_containers() {
+  # Source sandbox helpers for vm_exec (SCRIPT_DIR is expected by sandbox-common.sh)
+  local _saved_script_dir="${SCRIPT_DIR}"
+  SCRIPT_DIR="${PROJECT_ROOT}/bin" source "${PROJECT_ROOT}/lib/sandbox-common.sh" 2>/dev/null || return 0
+  SCRIPT_DIR="${_saved_script_dir}"
+
+  local containers
+  containers=$(vm_exec "incus list -f csv -c n 2>/dev/null | grep '^agent-test-' || true" 2>/dev/null) || return 0
+  if [[ -z "$containers" ]]; then
+    return 0
+  fi
+
+  echo ""
+  echo "Cleaning up leftover test containers..."
+  local name
+  for c in $containers; do
+    # Strip the "agent-" prefix to get the name sandbox-stop expects
+    name="${c#agent-}"
+    echo "  Stopping ${c}..."
+    "${PROJECT_ROOT}/bin/sandbox-stop" "$name" --rm 2>/dev/null || true
+  done
+  echo "Cleanup complete."
+}
+
 TIER="${1:-all}"
 
 case "$TIER" in
@@ -27,6 +54,7 @@ case "$TIER" in
     bats "${SCRIPT_DIR}/unit/"
     ;;
   integration)
+    trap cleanup_test_containers EXIT
     echo "Running integration tests (requires sandbox-setup)..."
     bats "${SCRIPT_DIR}/integration/"
     ;;
@@ -34,6 +62,7 @@ case "$TIER" in
     echo "Running unit tests..."
     bats "${SCRIPT_DIR}/unit/"
     echo ""
+    trap cleanup_test_containers EXIT
     echo "Running integration tests (requires sandbox-setup)..."
     bats "${SCRIPT_DIR}/integration/"
     ;;
