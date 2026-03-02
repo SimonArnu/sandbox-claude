@@ -184,7 +184,7 @@ if [[ -n "$FROM" ]]; then
   FROM_CONTAINER=$(container_name "$FROM")
 
   if [[ -z "$REPO" ]]; then
-    REPO=$(vm_exec "incus exec ${FROM_CONTAINER} -- git -C ${WORKSPACE_DIR} remote get-url origin 2>/dev/null" || true)
+    REPO=$(vm_exec "incus exec ${FROM_CONTAINER} -- git -c safe.directory=${WORKSPACE_DIR} -C ${WORKSPACE_DIR} remote get-url origin 2>/dev/null" || true)
     [[ -n "$REPO" ]] || die "Could not determine repo URL from container '${FROM_CONTAINER}'"
     info "Inherited repo: ${REPO}"
   fi
@@ -326,15 +326,21 @@ fi
 # ── Clone repo ──────────────────────────────────────────────────────
 if [[ -n "$REPO" ]]; then
   info "Cloning repository..."
-  CLONE_ARGS="git clone"
-  [[ -n "$BRANCH" ]] && CLONE_ARGS+=" --branch ${BRANCH}"
-  CLONE_ARGS+=" ${REPO} ${WORKSPACE_DIR}"
 
   # Configure safe.directory for ubuntu user and clone as ubuntu
   vm_run incus exec "${CONTAINER}" --user ${SANDBOX_UID} --group ${SANDBOX_GID} --env HOME=${SANDBOX_USER_HOME} -- \
-    bash -c "git config --global safe.directory '*' && SSH_AUTH_SOCK=/run/ssh-agent.sock ${CLONE_ARGS}" \
+    bash -c "git config --global safe.directory '*' && SSH_AUTH_SOCK=/run/ssh-agent.sock git clone ${REPO} ${WORKSPACE_DIR}" \
     || die "Git clone failed. Check SSH key and repo access."
-  ok "Repository cloned"
+
+  # Switch to requested branch (checkout if it exists remotely, create if it doesn't)
+  if [[ -n "$BRANCH" ]]; then
+    vm_run incus exec "${CONTAINER}" --user ${SANDBOX_UID} --group ${SANDBOX_GID} --env HOME=${SANDBOX_USER_HOME} -- \
+      bash -c "cd ${WORKSPACE_DIR} && git checkout ${BRANCH} 2>/dev/null || git checkout -b ${BRANCH}" \
+      || die "Failed to switch to branch '${BRANCH}'"
+    ok "Repository cloned (branch: ${BRANCH})"
+  else
+    ok "Repository cloned"
+  fi
 fi
 
 # Ensure workspace directory exists for scratch containers (no repo)

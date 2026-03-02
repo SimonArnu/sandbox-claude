@@ -95,8 +95,8 @@ for c in $CONTAINERS; do
 
     # Repo info
     if incus exec "$c" -- test -d /workspace/project/.git 2>/dev/null; then
-      remote=$(incus exec "$c" -- git -C /workspace/project remote get-url origin 2>/dev/null | sed -E 's#.*github\.com[:/]##; s#\.git$##' || echo "?")
-      branch=$(incus exec "$c" -- git -C /workspace/project branch --show-current 2>/dev/null || echo "?")
+      remote=$(incus exec "$c" -- git -c safe.directory=/workspace/project -C /workspace/project remote get-url origin 2>/dev/null | sed -E 's#.*github\.com[:/]##; s#\.git$##' || echo "?")
+      branch=$(incus exec "$c" -- git -c safe.directory=/workspace/project -C /workspace/project branch --show-current 2>/dev/null || echo "?")
       repo_info="${remote} (${branch})"
     fi
   fi
