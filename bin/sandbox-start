@@ -122,6 +122,9 @@ print_connection_summary() {
   app_p=$(app_port "$slot")
   alt_p=$(alt_port "$slot")
 
+  # Create SSH config alias for VS Code
+  ssh_config_add "$name" "$ssh_p"
+
   echo ""
   ok "=== '${container}' ${status_word} ==="
   echo ""
@@ -132,8 +135,8 @@ print_connection_summary() {
   else
     echo "  Domains:   open (all HTTPS allowed)"
   fi
-  echo "  SSH:       ssh -o StrictHostKeyChecking=no -p ${ssh_p} ubuntu@localhost"
-  echo "  VS Code:   code --remote ssh-remote+ubuntu@localhost:${ssh_p} ${WORKSPACE_DIR}"
+  echo "  SSH:       ssh sandbox-${name}"
+  echo "  VS Code:   code --remote ssh-remote+sandbox-${name} ${WORKSPACE_DIR}"
   echo "  App:       http://localhost:${app_p}"
   echo "  Alt:       http://localhost:${alt_p}"
   echo ""

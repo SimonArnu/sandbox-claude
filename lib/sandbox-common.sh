@@ -389,6 +389,51 @@ inject_env() {
   fi
 }
 
+# ── SSH config management (per-container host aliases for VS Code) ─
+SSH_CONFIG="${HOME}/.ssh/config"
+SANDBOX_SSH_MARKER="# sandbox-managed"
+
+# Add an SSH config entry for a container so VS Code treats it as a distinct host
+ssh_config_add() {
+  local name="$1" port="$2"
+  local host_alias="sandbox-${name}"
+
+  mkdir -p "$(dirname "$SSH_CONFIG")"
+  touch "$SSH_CONFIG"
+
+  # Remove existing entry if present
+  ssh_config_remove "$name"
+
+  cat >> "$SSH_CONFIG" << EOF
+
+Host ${host_alias} ${SANDBOX_SSH_MARKER}
+  HostName localhost
+  Port ${port}
+  User ubuntu
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  LogLevel QUIET
+EOF
+}
+
+# Remove the SSH config entry for a container
+ssh_config_remove() {
+  local name="$1"
+  local host_alias="sandbox-${name}"
+  [[ -f "$SSH_CONFIG" ]] || return 0
+  # Remove the Host block (from Host line to the next blank line or Host line)
+  python3 -c "
+import re, sys
+with open('${SSH_CONFIG}') as f:
+    content = f.read()
+# Match the Host block including the leading blank line
+pattern = r'\nHost ${host_alias} ${SANDBOX_SSH_MARKER}\n(?:  [^\n]*\n)*'
+content = re.sub(pattern, '', content)
+with open('${SSH_CONFIG}', 'w') as f:
+    f.write(content)
+" 2>/dev/null || true
+}
+
 # ── Container metadata helpers ─────────────────────────────────────
 # Store metadata in Incus config user.* keys for later retrieval
 set_metadata() {
