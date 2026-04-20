@@ -21,6 +21,38 @@ DOMAINS_FILE=""
 LOCAL_DIR=""
 MCP_SERVERS=()
 
+# Track which values were explicitly set via CLI flags
+declare -A CLI_SET=()
+
+# Load a config file, applying values only if not already set by CLI.
+# Format: key=value, one per line. Comments (#) and blank lines ignored.
+# Supported keys: stack, branch, ssh-key, slot, cpu, memory, env,
+#   env-file, local-dir, mcp, restrict-domains, domains-file
+load_config() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# || -z "${line// }" ]] && continue
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    case "$key" in
+      stack)            [[ -z "${CLI_SET[stack]:-}" ]] && STACK="$value" ;;
+      branch)           [[ -z "${CLI_SET[branch]:-}" ]] && BRANCH="$value" ;;
+      ssh-key)          [[ -z "${CLI_SET[ssh-key]:-}" ]] && SSH_KEY="$value" ;;
+      slot)             [[ -z "${CLI_SET[slot]:-}" ]] && SLOT="$value" ;;
+      cpu)              [[ -z "${CLI_SET[cpu]:-}" ]] && CPU="$value" ;;
+      memory)           [[ -z "${CLI_SET[memory]:-}" ]] && MEMORY="$value" ;;
+      local-dir)        [[ -z "${CLI_SET[local-dir]:-}" ]] && LOCAL_DIR="$value" ;;
+      restrict-domains) [[ -z "${CLI_SET[restrict-domains]:-}" ]] && RESTRICT_DOMAINS="yes" ;;
+      domains-file)     [[ -z "${CLI_SET[domains-file]:-}" ]] && RESTRICT_DOMAINS="yes" && DOMAINS_FILE="$value" ;;
+      env)              EXTRA_ENVS+=("$value") ;;
+      env-file)         ENV_FILES+=("$value") ;;
+      mcp)              MCP_SERVERS+=("$value") ;;
+      *)                warn "Unknown config key in ${file}: ${key}" ;;
+    esac
+  done < "$file"
+}
+
 # ── Helpers ──────────────────────────────────────────────────────
 apply_domain_filtering() {
   local container="$1" domains_file="$2"
@@ -105,19 +137,19 @@ print_connection_summary() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --stack)            [[ -n "${2:-}" ]] || die "--stack requires a value"; STACK="$2"; shift 2 ;;
-    --branch)           [[ -n "${2:-}" ]] || die "--branch requires a value"; BRANCH="$2"; shift 2 ;;
+    --stack)            [[ -n "${2:-}" ]] || die "--stack requires a value"; STACK="$2"; CLI_SET[stack]=1; shift 2 ;;
+    --branch)           [[ -n "${2:-}" ]] || die "--branch requires a value"; BRANCH="$2"; CLI_SET[branch]=1; shift 2 ;;
     --from)             [[ -n "${2:-}" ]] || die "--from requires a value"; FROM="$2"; shift 2 ;;
-    --ssh-key)          [[ -n "${2:-}" ]] || die "--ssh-key requires a value"; SSH_KEY="$2"; shift 2 ;;
-    --slot)             [[ -n "${2:-}" ]] || die "--slot requires a value"; SLOT="$2"; shift 2 ;;
-    --cpu)              [[ -n "${2:-}" ]] || die "--cpu requires a value"; CPU="$2"; shift 2 ;;
-    --memory)           [[ -n "${2:-}" ]] || die "--memory requires a value"; MEMORY="$2"; shift 2 ;;
+    --ssh-key)          [[ -n "${2:-}" ]] || die "--ssh-key requires a value"; SSH_KEY="$2"; CLI_SET[ssh-key]=1; shift 2 ;;
+    --slot)             [[ -n "${2:-}" ]] || die "--slot requires a value"; SLOT="$2"; CLI_SET[slot]=1; shift 2 ;;
+    --cpu)              [[ -n "${2:-}" ]] || die "--cpu requires a value"; CPU="$2"; CLI_SET[cpu]=1; shift 2 ;;
+    --memory)           [[ -n "${2:-}" ]] || die "--memory requires a value"; MEMORY="$2"; CLI_SET[memory]=1; shift 2 ;;
     --env)              [[ -n "${2:-}" ]] || die "--env requires a value"; EXTRA_ENVS+=("$2"); shift 2 ;;
     --env-file)         [[ -n "${2:-}" ]] || die "--env-file requires a value"; ENV_FILES+=("$2"); shift 2 ;;
-    --local-dir)        [[ -n "${2:-}" ]] || die "--local-dir requires a value"; LOCAL_DIR="$2"; shift 2 ;;
-    --mcp)              [[ -n "${2:-}" ]] || die "--mcp requires a value"; MCP_SERVERS+=("$2"); shift 2 ;;
-    --restrict-domains) RESTRICT_DOMAINS="yes"; shift ;;
-    --domains-file)     [[ -n "${2:-}" ]] || die "--domains-file requires a value"; RESTRICT_DOMAINS="yes"; DOMAINS_FILE="$2"; shift 2 ;;
+    --local-dir)        [[ -n "${2:-}" ]] || die "--local-dir requires a value"; LOCAL_DIR="$2"; CLI_SET[local-dir]=1; shift 2 ;;
+    --mcp)              [[ -n "${2:-}" ]] || die "--mcp requires a value"; MCP_SERVERS+=("$2"); CLI_SET[mcp]=1; shift 2 ;;
+    --restrict-domains) RESTRICT_DOMAINS="yes"; CLI_SET[restrict-domains]=1; shift ;;
+    --domains-file)     [[ -n "${2:-}" ]] || die "--domains-file requires a value"; RESTRICT_DOMAINS="yes"; DOMAINS_FILE="$2"; CLI_SET[domains-file]=1; shift 2 ;;
     --*)                die "Unknown flag: $1" ;;
     *)
       if [[ -z "$NAME" ]]; then
@@ -134,6 +166,34 @@ done
 
 [[ -n "$NAME" ]] || die "Usage: sandbox-start <name> [repo-url] [flags]"
 
+# ── Load config files (global, then project — CLI flags always win) ─
+# Save CLI-provided envs/env-files/mcp separately so config values layer underneath
+CLI_ENVS=("${EXTRA_ENVS[@]+"${EXTRA_ENVS[@]}"}")
+CLI_ENV_FILES=("${ENV_FILES[@]+"${ENV_FILES[@]}"}")
+CLI_MCP=("${MCP_SERVERS[@]+"${MCP_SERVERS[@]}"}")
+EXTRA_ENVS=()
+ENV_FILES=()
+if [[ -z "${CLI_SET[mcp]:-}" ]]; then
+  MCP_SERVERS=()
+fi
+
+SANDBOX_GLOBAL_CONFIG="${SANDBOX_CONFIG:-${HOME}/.sandbox/config}"
+load_config "$SANDBOX_GLOBAL_CONFIG"
+
+# Resolve local-dir early so we can find .sandbox.conf
+if [[ -n "$LOCAL_DIR" ]]; then
+  _RESOLVED_LOCAL="$(cd "$LOCAL_DIR" 2>/dev/null && pwd)" || true
+  if [[ -n "$_RESOLVED_LOCAL" && -f "${_RESOLVED_LOCAL}/.sandbox.conf" ]]; then
+    load_config "${_RESOLVED_LOCAL}/.sandbox.conf"
+  fi
+fi
+
+# Restore CLI values on top (CLI env-files, CLI envs last so they win)
+ENV_FILES+=(${CLI_ENV_FILES[@]+"${CLI_ENV_FILES[@]}"})
+if [[ -n "${CLI_SET[mcp]:-}" ]]; then
+  MCP_SERVERS=("${CLI_MCP[@]}")
+fi
+
 # ── Read --env-file(s), then append --env overrides on top ────────
 if [[ ${#ENV_FILES[@]} -gt 0 ]]; then
   FILE_ENVS=()
@@ -144,9 +204,11 @@ if [[ ${#ENV_FILES[@]} -gt 0 ]]; then
       FILE_ENVS+=("$line")
     done < "$ef"
   done
-  # env-file first, then --env overrides (last write wins in profile.d)
-  EXTRA_ENVS=("${FILE_ENVS[@]}" ${EXTRA_ENVS[@]+"${EXTRA_ENVS[@]}"})
+  EXTRA_ENVS+=(${FILE_ENVS[@]+"${FILE_ENVS[@]}"})
 fi
+
+# CLI --env values go last (highest precedence)
+EXTRA_ENVS+=(${CLI_ENVS[@]+"${CLI_ENVS[@]}"})
 
 # ── Validate --local-dir ──────────────────────────────────────────
 if [[ -n "$LOCAL_DIR" ]]; then
