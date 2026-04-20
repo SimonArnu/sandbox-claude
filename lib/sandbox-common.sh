@@ -302,6 +302,10 @@ SSHEOF
 chmod 600 ${SANDBOX_USER_HOME}/.ssh/config
 chown ${SANDBOX_UID}:${SANDBOX_GID} ${SANDBOX_USER_HOME}/.ssh/config'"
 
+  # Pre-seed github.com host keys so git/ssh don't reject on first connect
+  vm_run incus exec "${container}" --user ${SANDBOX_UID} --group ${SANDBOX_GID} -- \
+    bash -c "ssh-keyscan -t ed25519,rsa github.com >> ${SANDBOX_USER_HOME}/.ssh/known_hosts 2>/dev/null"
+
   # Start SSH agent inside the container (as root, then make socket accessible to ubuntu)
   vm_exec "incus exec ${container} -- bash -c 'eval \$(ssh-agent -a /run/ssh-agent.sock) && echo \$SSH_AGENT_PID > /run/ssh-agent.pid && chmod 660 /run/ssh-agent.sock && chown root:${SANDBOX_GID} /run/ssh-agent.sock && ssh-add ${SANDBOX_USER_HOME}/.ssh/deploy-key'"
 

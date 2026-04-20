@@ -20,6 +20,8 @@ RESTRICT_DOMAINS=""
 DOMAINS_FILE=""
 LOCAL_DIR=""
 MCP_SERVERS=()
+PLUGIN_MARKETPLACES=()
+PLUGIN_INSTALLS=()
 
 # Track which values were explicitly set via CLI flags
 declare -A CLI_SET=()
@@ -48,6 +50,8 @@ load_config() {
       env)              EXTRA_ENVS+=("$value") ;;
       env-file)         ENV_FILES+=("$value") ;;
       mcp)              MCP_SERVERS+=("$value") ;;
+      plugin-marketplace) PLUGIN_MARKETPLACES+=("$value") ;;
+      plugin)           PLUGIN_INSTALLS+=("$value") ;;
       *)                warn "Unknown config key in ${file}: ${key}" ;;
     esac
   done < "$file"
@@ -443,6 +447,22 @@ inject_env "$CONTAINER" ${EXTRA_ENVS[@]+"${EXTRA_ENVS[@]}"}
 if [[ ${#MCP_SERVERS[@]} -gt 0 ]]; then
   info "Injecting MCP server configuration..."
   inject_mcp_servers "$CONTAINER" "${MCP_SERVERS[@]}"
+fi
+
+# ── Claude plugins ─────────────────────────────────────────────────
+if [[ ${#PLUGIN_MARKETPLACES[@]} -gt 0 || ${#PLUGIN_INSTALLS[@]} -gt 0 ]]; then
+  info "Installing Claude Code plugins..."
+  for marketplace in "${PLUGIN_MARKETPLACES[@]+"${PLUGIN_MARKETPLACES[@]}"}"; do
+    vm_run incus exec "${CONTAINER}" --user ${SANDBOX_UID} --group ${SANDBOX_GID} --env HOME=${SANDBOX_USER_HOME} -- \
+      bash -lc "claude plugin marketplace add '${marketplace}'" \
+      || warn "Failed to add marketplace: ${marketplace}"
+  done
+  for plugin in "${PLUGIN_INSTALLS[@]+"${PLUGIN_INSTALLS[@]}"}"; do
+    vm_run incus exec "${CONTAINER}" --user ${SANDBOX_UID} --group ${SANDBOX_GID} --env HOME=${SANDBOX_USER_HOME} -- \
+      bash -lc "claude plugin install '${plugin}'" \
+      || warn "Failed to install plugin: ${plugin}"
+  done
+  ok "Claude plugins installed"
 fi
 
 # ── Domain filtering ───────────────────────────────────────────────
