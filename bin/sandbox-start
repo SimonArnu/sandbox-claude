@@ -443,6 +443,23 @@ fi
 # ── Env vars ────────────────────────────────────────────────────────
 inject_env "$CONTAINER" ${EXTRA_ENVS[@]+"${EXTRA_ENVS[@]}"}
 
+# ── Claude config injection (CLAUDE.md + supporting files) ────────
+SANDBOX_CLAUDE_MD="${HOME}/.sandbox/claude.md"
+if [[ -f "$SANDBOX_CLAUDE_MD" ]]; then
+  info "Injecting sandbox CLAUDE.md..."
+  vm_run incus exec "${CONTAINER}" -- mkdir -p "${SANDBOX_USER_HOME}/.claude"
+  vm_run incus file push "$SANDBOX_CLAUDE_MD" "${CONTAINER}${SANDBOX_USER_HOME}/.claude/CLAUDE.md" \
+    --uid=${SANDBOX_UID} --gid=${SANDBOX_GID}
+  # Inject any supporting files referenced by CLAUDE.md
+  for f in "${HOME}/.sandbox/"*.md; do
+    [[ "$(basename "$f")" == "claude.md" ]] && continue
+    [[ -f "$f" ]] || continue
+    vm_run incus file push "$f" "${CONTAINER}${SANDBOX_USER_HOME}/.claude/$(basename "$f")" \
+      --uid=${SANDBOX_UID} --gid=${SANDBOX_GID}
+  done
+  ok "Claude config injected"
+fi
+
 # ── MCP servers ────────────────────────────────────────────────────
 if [[ ${#MCP_SERVERS[@]} -gt 0 ]]; then
   info "Injecting MCP server configuration..."
