@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+# ABOUTME: HTTP notification server for sandbox containers
+# ABOUTME: Listens on the Incus bridge IP and forwards notifications to the host desktop
+"""
+Lightweight HTTP server that receives notification requests from sandbox containers
+and displays them as desktop notifications on the host via notify-send.
+
+Listens on the Incus bridge IP (10.100.0.1) so containers can reach it.
+"""
+import http.server
+import json
+import subprocess
+import sys
+import os
+
+PORT = int(os.environ.get("SANDBOX_NOTIFY_PORT", "9876"))
+BIND = os.environ.get("SANDBOX_NOTIFY_BIND", "10.100.0.1")
+
+
+class NotifyHandler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
+
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            data = {"message": body}
+
+        title = data.get("title", "Sandbox")
+        message = data.get("message", "Notification from sandbox")
+        urgency = data.get("urgency", "normal")
+        expire = data.get("expire", "60000")
+
+        subprocess.Popen(
+            ["notify-send", "--expire-time", str(expire), "-u", urgency, title, message],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"ok\n")
+
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok\n")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        # Quiet logging — only errors
+        pass
+
+
+def main():
+    server = http.server.HTTPServer((BIND, PORT), NotifyHandler)
+    print(f"sandbox-notify listening on {BIND}:{PORT}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped")
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

@@ -507,6 +507,40 @@ if [[ ${#PLUGIN_MARKETPLACES[@]} -gt 0 || ${#PLUGIN_INSTALLS[@]} -gt 0 ]]; then
   ok "Claude plugins installed"
 fi
 
+# ── Notification hooks (after MCP + plugins so we merge into final settings.json) ─
+NOTIFY_HOOK="${SCRIPT_DIR}/../lib/sandbox-notify-hook.sh"
+if [[ -f "$NOTIFY_HOOK" ]]; then
+  info "Installing notification hooks..."
+  vm_run incus exec "${CONTAINER}" -- mkdir -p "${SANDBOX_USER_HOME}/.claude/hooks"
+  vm_run incus file push "$NOTIFY_HOOK" "${CONTAINER}${SANDBOX_USER_HOME}/.claude/hooks/notify.sh" \
+    --uid=${SANDBOX_UID} --gid=${SANDBOX_GID} --mode=755
+
+  vm_run incus exec "${CONTAINER}" --user ${SANDBOX_UID} --group ${SANDBOX_GID} --env HOME=${SANDBOX_USER_HOME} -- \
+    bash -c 'python3 -c "
+import json, os
+path = os.path.expanduser(\"~/.claude/settings.json\")
+try:
+    with open(path) as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
+hook_cmd = \"~/.claude/hooks/notify.sh\"
+hook_entry = {\"type\": \"command\", \"command\": hook_cmd}
+hooks = settings.setdefault(\"hooks\", {})
+for event, matcher in [(\"Stop\", \"*\"), (\"PreToolUse\", \"AskUserQuestion\")]:
+    entries = hooks.setdefault(event, [])
+    already = any(
+        h.get(\"hooks\") and any(hh.get(\"command\") == hook_cmd for hh in h[\"hooks\"])
+        for h in entries
+    )
+    if not already:
+        entries.append({\"matcher\": matcher, \"hooks\": [hook_entry]})
+with open(path, \"w\") as f:
+    json.dump(settings, f, indent=2)
+"'
+  ok "Notification hooks installed"
+fi
+
 # ── Domain filtering ───────────────────────────────────────────────
 if [[ "$RESTRICT_DOMAINS" == "yes" ]]; then
   info "Applying domain-based egress filtering..."
