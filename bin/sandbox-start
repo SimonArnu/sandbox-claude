@@ -17,6 +17,8 @@ MEMORY=""
 EXTRA_ENVS=()
 RESTRICT_DOMAINS=""
 DOMAINS_FILE=""
+LOCAL_DIR=""
+MCP_SERVERS=()
 
 # ── Helpers ──────────────────────────────────────────────────────
 apply_domain_filtering() {
@@ -31,9 +33,44 @@ apply_domain_filtering() {
 
   setup_container_domain_filter "$container" "$resolved_file" "$container_ip"
   redirect_container_to_squid "$container_ip"
-  vm_exec "iptables -I FORWARD -s '${container_ip}' -o '${OUTBOUND_IFACE}' -p udp --dport 443 -j DROP"
+  vm_exec "sudo iptables -I FORWARD -s '${container_ip}' -o '${OUTBOUND_IFACE}' -p udp --dport 443 -j DROP"
 
   ok "Domain filtering active (${resolved_name})"
+}
+
+inject_mcp_servers() {
+  local container="$1"
+  shift
+  local servers=("$@")
+  local claude_config_dir="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+  local host_settings="${claude_config_dir}/settings.json"
+
+  [[ -f "$host_settings" ]] || die "Claude settings not found: ${host_settings}"
+
+  local selected_json
+  selected_json=$(python3 -c "
+import json, sys
+with open('${host_settings}') as f:
+    settings = json.load(f)
+all_servers = settings.get('mcpServers', {})
+requested = sys.argv[1:]
+if 'all' in requested:
+    selected = all_servers
+else:
+    selected = {}
+    for name in requested:
+        if name not in all_servers:
+            print(f'MCP server \"{name}\" not found in {\"${host_settings}\"}', file=sys.stderr)
+            sys.exit(1)
+        selected[name] = all_servers[name]
+print(json.dumps({'mcpServers': selected}, indent=2))
+" "${servers[@]}") || die "Failed to extract MCP server configs"
+
+  # Write settings.json into the container
+  echo "$selected_json" | vm_run incus exec "${container}" -- \
+    bash -c "mkdir -p ${SANDBOX_USER_HOME}/.claude && cat > ${SANDBOX_USER_HOME}/.claude/settings.json && chown -R ${SANDBOX_UID}:${SANDBOX_GID} ${SANDBOX_USER_HOME}/.claude"
+
+  ok "MCP servers injected: ${servers[*]}"
 }
 
 print_connection_summary() {
@@ -75,6 +112,8 @@ while [[ $# -gt 0 ]]; do
     --cpu)              [[ -n "${2:-}" ]] || die "--cpu requires a value"; CPU="$2"; shift 2 ;;
     --memory)           [[ -n "${2:-}" ]] || die "--memory requires a value"; MEMORY="$2"; shift 2 ;;
     --env)              [[ -n "${2:-}" ]] || die "--env requires a value"; EXTRA_ENVS+=("$2"); shift 2 ;;
+    --local-dir)        [[ -n "${2:-}" ]] || die "--local-dir requires a value"; LOCAL_DIR="$2"; shift 2 ;;
+    --mcp)              [[ -n "${2:-}" ]] || die "--mcp requires a value"; MCP_SERVERS+=("$2"); shift 2 ;;
     --restrict-domains) RESTRICT_DOMAINS="yes"; shift ;;
     --domains-file)     [[ -n "${2:-}" ]] || die "--domains-file requires a value"; RESTRICT_DOMAINS="yes"; DOMAINS_FILE="$2"; shift 2 ;;
     --*)                die "Unknown flag: $1" ;;
@@ -92,6 +131,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$NAME" ]] || die "Usage: sandbox-start <name> [repo-url] [flags]"
+
+# ── Validate --local-dir ──────────────────────────────────────────
+if [[ -n "$LOCAL_DIR" ]]; then
+  [[ -z "$REPO" ]] || die "Cannot use --local-dir with a repo URL"
+  LOCAL_DIR="$(cd "$LOCAL_DIR" 2>/dev/null && pwd)" || die "Directory not found: ${LOCAL_DIR}"
+  [[ -d "$LOCAL_DIR" ]] || die "Not a directory: ${LOCAL_DIR}"
+fi
 
 # ── Check for existing container (restart-or-create) ──────────────
 require_sandbox
@@ -117,6 +163,7 @@ if [[ "$CONTAINER_STATE" == "STOPPED" ]]; then
   [[ -n "$REPO" ]]         && IMMUTABLE_ERROR+="  --repo (cannot change repo on restart)\n"
   [[ -n "$BRANCH" ]]       && IMMUTABLE_ERROR+="  --branch (cannot change branch on restart)\n"
   [[ -n "$SLOT" ]]         && IMMUTABLE_ERROR+="  --slot (cannot change slot on restart)\n"
+  [[ -n "$LOCAL_DIR" ]]    && IMMUTABLE_ERROR+="  --local-dir (cannot change mount on restart)\n"
   if [[ -n "$IMMUTABLE_ERROR" ]]; then
     die "Cannot change these flags on restart (destroy and recreate instead):\n${IMMUTABLE_ERROR}Use 'sandbox-stop ${NAME} --rm' first, then 'sandbox-start ${NAME} ...' to recreate."
   fi
@@ -275,6 +322,12 @@ vm_exec "
     listen=tcp:127.0.0.1:${ALT_P} connect=tcp:127.0.0.1:9090
 "
 
+# Bind-mount host directory if --local-dir
+if [[ -n "$LOCAL_DIR" ]]; then
+  info "Mounting ${LOCAL_DIR} → ${WORKSPACE_DIR}..."
+  vm_exec "incus config device add ${CONTAINER} workspace disk source=${LOCAL_DIR} path=${WORKSPACE_DIR} shift=true"
+fi
+
 # Start
 vm_exec "incus start ${CONTAINER}"
 vm_exec "sleep 3"
@@ -308,6 +361,12 @@ fi
 # ── Env vars ────────────────────────────────────────────────────────
 inject_env "$CONTAINER" ${EXTRA_ENVS[@]+"${EXTRA_ENVS[@]}"}
 
+# ── MCP servers ────────────────────────────────────────────────────
+if [[ ${#MCP_SERVERS[@]} -gt 0 ]]; then
+  info "Injecting MCP server configuration..."
+  inject_mcp_servers "$CONTAINER" "${MCP_SERVERS[@]}"
+fi
+
 # ── Domain filtering ───────────────────────────────────────────────
 if [[ "$RESTRICT_DOMAINS" == "yes" ]]; then
   info "Applying domain-based egress filtering..."
@@ -318,6 +377,7 @@ fi
 set_metadata "$CONTAINER" "slot" "$SLOT"
 set_metadata "$CONTAINER" "stack" "$STACK"
 [[ -n "$REPO" ]] && set_metadata "$CONTAINER" "repo" "$REPO"
+[[ -n "$LOCAL_DIR" ]] && set_metadata "$CONTAINER" "local-dir" "$LOCAL_DIR"
 if [[ "$RESTRICT_DOMAINS" == "yes" ]]; then
   set_metadata "$CONTAINER" "restrict-domains" "yes"
   [[ -n "$DOMAINS_FILE" ]] && set_metadata "$CONTAINER" "domains-file" "$DOMAINS_FILE"
@@ -343,8 +403,8 @@ if [[ -n "$REPO" ]]; then
   fi
 fi
 
-# Ensure workspace directory exists for scratch containers (no repo)
-if [[ -z "$REPO" ]]; then
+# Ensure workspace directory exists for scratch containers (no repo, no local-dir)
+if [[ -z "$REPO" && -z "$LOCAL_DIR" ]]; then
   vm_run incus exec "${CONTAINER}" --user ${SANDBOX_UID} --group ${SANDBOX_GID} -- \
     mkdir -p "${WORKSPACE_DIR}"
 fi
