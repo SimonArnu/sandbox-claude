@@ -6,10 +6,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "Installing Node stack..."
 
-# Node.js 22 LTS (via NodeSource) — moved here from base.sh
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt-get install -y nodejs
-apt-get clean && rm -rf /var/lib/apt/lists/*
+# Node.js is already in the base image; this stack adds package managers and tools
 
 # Alt package managers
 npm install -g pnpm yarn

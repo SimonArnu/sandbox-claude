@@ -21,6 +21,13 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githu
 apt-get update
 apt-get install -y gh
 
+# Node.js 22 LTS (via NodeSource)
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs
+
+# OpenSpec (spec framework for AI-assisted development)
+npm install -g @fission-ai/openspec@latest
+
 # Docker (official repo)
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
