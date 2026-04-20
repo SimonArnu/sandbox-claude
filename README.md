@@ -11,6 +11,10 @@ Run Claude Code agents in fully isolated Incus containers on **macOS** (via OrbS
 - **Per-container deploy keys and SSH agent** -- private keys never touch the container's disk
 - **Domain-based egress filtering** -- restrict HTTPS traffic to an approved allowlist
 - **Bidirectional port forwarding** -- access container services from your host and vice versa
+- **Mount local directories** -- bind-mount host repos into containers for live editing
+- **MCP server injection** -- selectively copy MCP configs from your host into containers
+- **Config files** -- global defaults and per-project overrides via `~/.sandbox/config` and `.sandbox.conf`
+- **Claude Code plugins** -- auto-install plugins from private marketplaces on container start
 
 ## Quickstart
 
@@ -39,7 +43,13 @@ cd sandbox-claude
 # 2. Install Linux prerequisites (requires sudo, then log out/in)
 sudo sandbox-linux-prereqs  # Installs iptables, curl, gpg, git, gh; adds you to incus-admin
 
-# 3. One-time setup (installs Incus + Squid on host, builds golden images)
+# 3. Configure passwordless sudo for sandbox operations
+sudo tee /etc/sudoers.d/sandbox << 'EOF'
+# Allow sandbox scripts to manage iptables, squid, and systemctl without password
+your-username ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/bin/squid, /usr/bin/systemctl
+EOF
+
+# 4. One-time setup (installs Incus + Squid on host, builds golden images)
 sandbox-setup               # Takes ~10 minutes the first time
 ```
 
@@ -61,6 +71,16 @@ sandbox-start my-project      # Restart a stopped container
 sandbox-stop my-project --rm  # Destroy (removes container + deploy key)
 ```
 
+### Working with Local Repos
+
+```bash
+# Mount a local checkout into the container (bidirectional)
+sandbox-start my-project --local-dir ~/dev/my-repo --stack node
+
+# VS Code remote access
+code --remote ssh-remote+ubuntu@localhost:2201 /workspace/project
+```
+
 ## Table of Contents
 
 - [Architecture](#architecture)
@@ -69,7 +89,10 @@ sandbox-stop my-project --rm  # Destroy (removes container + deploy key)
 - [Commands Reference](#commands-reference)
 - [Stacks](#stacks)
 - [Configuration](#configuration)
+  - [Config Files](#config-files)
   - [Environment Variables](#environment-variables)
+  - [MCP Servers](#mcp-servers)
+  - [Claude Code Plugins](#claude-code-plugins)
   - [Domain-Based Egress Filtering](#domain-based-egress-filtering)
 - [Security Model](#security-model)
 - [Troubleshooting](#troubleshooting)
@@ -93,7 +116,7 @@ Linux path:
 
 ```
 Golden images (shared across both platforms):
-  +-- golden-base/ready     (Docker, Claude Code, SSH, git, Python 3)
+  +-- golden-base/ready     (Docker, Claude Code, gh, SSH, git, Python 3)
   +-- golden-rust/ready     (base + Rust toolchain + quality tools)
   +-- golden-python/ready   (base + Poetry, uv, ruff, mypy, etc.)
   +-- golden-node/ready     (base + Node.js 22, npm, pnpm, yarn, bun, eslint, etc.)
@@ -144,6 +167,7 @@ The sandbox works on both **macOS** (via OrbStack) and **native Linux** hosts:
 | Squid proxy | Inside VM | On host |
 | Port forwarding | Container → VM → macOS (2 hops) | Container → host (1 hop) |
 | Setup | `sandbox-setup` creates VM + installs everything | `sandbox-setup` installs directly on host |
+| Sudo | Not needed (runs in VM) | Passwordless sudo for `iptables`, `squid`, `systemctl` |
 
 All `sandbox-*` commands auto-detect the platform and adjust their behavior. No flags or configuration needed.
 
@@ -169,6 +193,7 @@ Run `sudo sandbox-linux-prereqs` to install everything in this table automatical
 | **`incus-admin` group** | `sudo sandbox-linux-prereqs` or `sudo usermod -aG incus-admin $USER` | Required for non-root Incus access |
 | **`iptables`** | `sudo sandbox-linux-prereqs` or `apt install iptables` | Required for egress filtering |
 | **`curl`, `gpg`, `git`** | `sudo sandbox-linux-prereqs` or `apt install curl gnupg git` | Required by `sandbox-setup` for Incus installation |
+| **Passwordless sudo** | See [Linux Quickstart](#linux-quickstart) | Required for `iptables`, `squid`, `systemctl` in non-interactive scripts |
 
 ### Both Platforms
 
@@ -216,7 +241,7 @@ This script does **not** install Incus or Squid -- those are handled by `sandbox
 
 ### sandbox-setup
 
-One-time infrastructure setup. Idempotent -- safe to re-run.
+One-time infrastructure setup. Idempotent -- safe to re-run. On Linux, prompts for sudo at the start to cache credentials for privileged steps.
 
 ```
 sandbox-setup [--rebuild <stack>]
@@ -249,7 +274,7 @@ sandbox-setup --rebuild all
 
 ### sandbox-start
 
-Create a new agent container, or restart a stopped one.
+Create a new agent container, or restart a stopped one. Loads configuration from `~/.sandbox/config` (global defaults) and `<local-dir>/.sandbox.conf` (per-project overrides) before applying CLI flags.
 
 ```
 sandbox-start <name> [repo-url] [flags]
@@ -261,28 +286,34 @@ sandbox-start <name> [repo-url] [flags]
 | `--branch <name>` | Git branch to checkout after cloning (created if it doesn't exist) | Repo default branch |
 | `--from <name>` | Copy repo URL and stack from an existing container | -- |
 | `--ssh-key <path>` | Use a specific SSH key instead of auto-generating a deploy key | Auto-generate |
+| `--local-dir <path>` | Bind-mount a host directory at `/workspace/project` (mutually exclusive with repo URL) | -- |
 | `--slot <n>` | Force a specific port slot (1-99) | Auto-assign |
 | `--cpu <n>` | CPU core limit | No limit (shares VM) |
 | `--memory <size>` | Memory limit (e.g., `8GiB`) | No limit (shares VM) |
 | `--env KEY=VALUE` | Extra environment variable (repeatable) | -- |
+| `--env-file <path>` | Load environment variables from a file (repeatable) | -- |
+| `--mcp <name>` | Inject MCP server config from host's `~/.claude/settings.json` (repeatable, or `all`) | -- |
 | `--restrict-domains` | Enable domain-based HTTPS egress filtering with default allowlist | Off (all HTTPS allowed) |
 | `--domains-file <path>` | Enable domain filtering with a custom allowlist file | Bundled `anthropic-default.txt` |
 
 **Steps performed:**
 
-1. Validates the golden image exists for the chosen stack
-2. Auto-assigns the next free slot (or validates a manually provided slot)
-3. If a repo URL is provided and `--ssh-key` is not set: auto-generates an ed25519 deploy key and registers it on GitHub via `gh`
-4. Clones the golden image snapshot (instant btrfs copy-on-write)
-5. Applies resource limits if `--cpu` or `--memory` are set
-6. Adds Incus proxy devices for SSH, App, and Alt ports
-7. Starts the container
-8. Sets up a dedicated ssh-agent in the sandbox environment (OrbStack VM on macOS, host on Linux) and mounts the socket into the container
-9. Injects environment variables from `~/.sandbox/env` and any `--env` overrides into `/etc/profile.d/sandbox-env.sh`
-10. If `--restrict-domains` is set: configures Squid SNI filtering, iptables NAT redirect, and QUIC blocking for this container
-11. Clones the repo into `/workspace/project` (with `--branch` if specified)
-12. Stores metadata (stack, repo, slot, restrict-domains) in Incus config for later retrieval
-13. Prints connection info
+1. Loads `~/.sandbox/config` (global defaults) and `<local-dir>/.sandbox.conf` (per-project overrides)
+2. Validates the golden image exists for the chosen stack
+3. Auto-assigns the next free slot (or validates a manually provided slot)
+4. If a repo URL is provided and `--ssh-key` is not set: auto-generates an ed25519 deploy key and registers it on GitHub via `gh`
+5. Clones the golden image snapshot (instant btrfs copy-on-write)
+6. Applies resource limits if `--cpu` or `--memory` are set
+7. If `--local-dir` is set: adds an Incus disk device to bind-mount the host directory
+8. Adds Incus proxy devices for SSH, App, and Alt ports
+9. Starts the container
+10. Injects host SSH key and sets up SSH agent with deploy key (pre-seeds github.com host keys)
+11. Injects environment variables from `~/.sandbox/env`, `--env-file`, and `--env` overrides
+12. Injects MCP server configurations from host's Claude settings
+13. Installs Claude Code plugins from configured marketplaces
+14. If `--restrict-domains` is set: configures Squid SNI filtering, iptables NAT redirect, and QUIC blocking
+15. Clones the repo into `/workspace/project` (with `--branch` if specified)
+16. Stores metadata (stack, repo, slot, restrict-domains) in Incus config
 
 ```bash
 # Minimal -- just a scratch container
@@ -290,6 +321,9 @@ sandbox-start scratch
 
 # Typical usage -- project with a specific stack
 sandbox-start proj-alpha git@github.com:me/alpha.git --stack rust
+
+# Mount a local checkout (bidirectional -- changes sync both ways)
+sandbox-start proj-alpha --local-dir ~/dev/alpha --stack rust
 
 # Branch from an existing container (inherits repo URL and stack)
 sandbox-start proj-alpha-hotfix --from proj-alpha --branch hotfix/auth-fix
@@ -302,6 +336,15 @@ sandbox-start proj git@github.com:me/repo.git --ssh-key ~/.ssh/my_key
 
 # Extra env vars
 sandbox-start proj git@github.com:me/repo.git --env DB_HOST=localhost --env DB_PORT=5432
+
+# Load env vars from a file
+sandbox-start proj git@github.com:me/repo.git --env-file .env.sandbox
+
+# Inject specific MCP servers from host config
+sandbox-start proj --local-dir ~/dev/repo --mcp sonarqube --mcp puppeteer
+
+# Inject all MCP servers from host config
+sandbox-start proj --local-dir ~/dev/repo --mcp all
 
 # Restrict HTTPS egress (see Domain-Based Egress Filtering)
 sandbox-start proj git@github.com:me/repo.git --restrict-domains
@@ -321,7 +364,7 @@ sandbox-start my-project --cpu 4 --memory 8GiB --env NEW_VAR=value
 
 **Flags that can be changed on restart** (reconfigurable): `--cpu`, `--memory`, `--env`, `--ssh-key`, `--restrict-domains`, `--domains-file`.
 
-**Flags that require a fresh container** (immutable on restart): `--stack`, `--from`, `--repo`, `--branch`, `--slot`. Using these on a stopped container will produce an error; destroy and recreate instead.
+**Flags that require a fresh container** (immutable on restart): `--stack`, `--from`, `--repo`, `--branch`, `--slot`, `--local-dir`. Using these on a stopped container will produce an error; destroy and recreate instead.
 
 ---
 
@@ -492,7 +535,7 @@ Golden images are pre-built container snapshots with all tooling installed. Crea
 
 | Stack | Image Name | Includes | Quality/Coverage Tools |
 |---|---|---|---|
-| **base** | `golden-base` | Docker CE + docker-compose-plugin, Claude Code (native binary), Python 3 + pip + venv, git, tmux, openssh-server, ripgrep, jq, htop, wget, unzip, build-essential, ca-certificates | -- |
+| **base** | `golden-base` | Docker CE + docker-compose-plugin, Claude Code (native binary), GitHub CLI (`gh`), Python 3 + pip + venv, git, tmux, openssh-server, ripgrep, jq, htop, wget, unzip, build-essential, ca-certificates | -- |
 | **rust** | `golden-rust` | Everything in base + Rust stable toolchain via rustup | clippy (linting), rustfmt (formatting), cargo-tarpaulin (coverage), cargo-audit (security) |
 | **python** | `golden-python` | Everything in base + Poetry, uv | ruff (linting + formatting), mypy (type checking), bandit (security), coverage (code coverage) |
 | **node** | `golden-node` | Everything in base + Node.js 22 LTS, npm, pnpm, yarn, bun | c8 (V8-native coverage), eslint (linting), prettier (formatting) |
@@ -547,6 +590,54 @@ sandbox-start my-elixir-app git@github.com:me/app.git --stack elixir
 
 ## Configuration
 
+### Config Files
+
+`sandbox-start` loads configuration from two files before applying CLI flags:
+
+1. **`~/.sandbox/config`** -- global defaults for all containers
+2. **`<local-dir>/.sandbox.conf`** -- per-project overrides (auto-loaded when `--local-dir` is used)
+
+**Precedence** (last wins): global config → project config → `--env-file` → CLI flags.
+
+Both files use the same format -- one `key=value` per line, comments with `#`:
+
+```bash
+# ~/.sandbox/config
+ssh-key=/home/user/.ssh/id_sandbox
+mcp=sonarqube
+plugin-marketplace=my-org/my-marketplace
+plugin=my-plugin
+```
+
+```bash
+# ~/dev/my-project/.sandbox.conf
+stack=node
+mcp=sonarqube
+env=NODE_ENV=development
+env=LOG_LEVEL=debug
+```
+
+#### Supported Config Keys
+
+| Key | Description | Equivalent CLI flag |
+|---|---|---|
+| `stack` | Golden image to use | `--stack` |
+| `branch` | Git branch to checkout | `--branch` |
+| `ssh-key` | Path to SSH private key | `--ssh-key` |
+| `slot` | Port slot (1-99) | `--slot` |
+| `cpu` | CPU core limit | `--cpu` |
+| `memory` | Memory limit | `--memory` |
+| `local-dir` | Host directory to bind-mount | `--local-dir` |
+| `env` | Environment variable (repeatable) | `--env` |
+| `env-file` | Path to env file (repeatable) | `--env-file` |
+| `mcp` | MCP server name to inject (repeatable) | `--mcp` |
+| `restrict-domains` | Enable domain filtering (value ignored) | `--restrict-domains` |
+| `domains-file` | Custom domain allowlist path | `--domains-file` |
+| `plugin-marketplace` | Plugin marketplace to add (repeatable) | -- |
+| `plugin` | Plugin to install (repeatable) | -- |
+
+For scalar keys (stack, branch, ssh-key, etc.), CLI flags override config file values. For additive keys (env, mcp, plugin), values from all sources are combined, with CLI `--env` values taking precedence over same-named variables from config files.
+
 ### Environment Variables
 
 #### The `~/.sandbox/env` File
@@ -562,22 +653,29 @@ MY_CUSTOM_VAR=some-value
 
 This file is read by `sandbox-start` and injected into each container's `/etc/profile.d/sandbox-env.sh`. Variables persist across container restarts.
 
-#### Per-Container Overrides with `--env`
+#### Per-Container Overrides with `--env` and `--env-file`
 
 Add or override environment variables for a specific container:
 
 ```bash
+# Inline
 sandbox-start proj git@github.com:me/repo.git \
   --env DATABASE_URL=postgres://localhost/mydb \
   --env REDIS_URL=redis://localhost:6379
+
+# From a file
+sandbox-start proj git@github.com:me/repo.git --env-file .env.sandbox
 ```
 
-The `--env` flag is repeatable. Values provided via `--env` take precedence over values in `~/.sandbox/env`.
+The `--env` and `--env-file` flags are repeatable. Values provided via `--env` take precedence over all other sources.
 
 #### Layering Order
 
 1. `~/.sandbox/env` -- loaded first, applies to all containers
-2. `--env KEY=VALUE` -- per-container overrides, applied after
+2. `~/.sandbox/config` `env=` lines -- global config defaults
+3. `<local-dir>/.sandbox.conf` `env=` lines -- per-project overrides
+4. `--env-file <path>` -- explicit env file(s)
+5. `--env KEY=VALUE` -- per-container CLI overrides (highest precedence)
 
 #### env.example Reference
 
@@ -587,15 +685,67 @@ A typical `~/.sandbox/env` file:
 # Required for Claude Code
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 
-# Optional: GitHub token for API access inside containers
+# GitHub token (used by gh CLI and plugin installs inside containers)
 GITHUB_TOKEN=ghp_your-token-here
 
-# Optional: Custom variables for your projects
-NODE_ENV=development
-RUST_LOG=debug
+# Optional: SonarQube credentials (used by MCP server)
+SONARQUBE_URL=https://sonar.example.com
+SONARQUBE_TOKEN=sqa_your-token-here
+
+# Optional: Jira credentials
+JIRA_URL=https://your-org.atlassian.net
+JIRA_USERNAME=you@example.com
+JIRA_API_TOKEN=your-jira-token
 ```
 
-The `~/.sandbox/` directory (including `env` and `keys/`) lives outside the repo entirely and is never committed.
+The `~/.sandbox/` directory (including `env`, `config`, and `keys/`) lives outside the repo entirely and is never committed.
+
+### MCP Servers
+
+Inject MCP server configurations from your host's `~/.claude/settings.json` into containers:
+
+```bash
+# Inject a specific server
+sandbox-start proj --local-dir ~/dev/repo --mcp sonarqube
+
+# Inject multiple servers
+sandbox-start proj --local-dir ~/dev/repo --mcp sonarqube --mcp puppeteer
+
+# Inject all configured servers
+sandbox-start proj --local-dir ~/dev/repo --mcp all
+```
+
+Or set defaults in config files:
+
+```bash
+# ~/.sandbox/config
+mcp=sonarqube
+```
+
+The `--mcp` flag reads the named entry from `mcpServers` in `~/.claude/settings.json` (including command, args, and env vars) and writes it to the container's `/home/ubuntu/.claude/settings.json`.
+
+MCP servers that run via Docker (e.g., `docker run --rm -i mcp/sonarqube`) work inside containers since Docker is pre-installed in the base image.
+
+### Claude Code Plugins
+
+Install Claude Code plugins from private or public marketplaces on container start:
+
+```bash
+# ~/.sandbox/config
+plugin-marketplace=my-org/my-plugin-marketplace
+plugin=my-plugin
+```
+
+Plugins are installed per-container (not baked into the golden image) because they typically need GitHub authentication to access private marketplace repos. The `GITHUB_TOKEN` from `~/.sandbox/env` is available during plugin install.
+
+Multiple marketplaces and plugins can be configured:
+
+```bash
+plugin-marketplace=org-a/marketplace-a
+plugin-marketplace=org-b/marketplace-b
+plugin=plugin-from-a
+plugin=plugin-from-b
+```
 
 ### Domain-Based Egress Filtering
 
@@ -661,7 +811,7 @@ Or create a project-specific file and pass it with `--domains-file`.
 
 | Boundary | Protection |
 |---|---|
-| **Host filesystem** (macOS / Linux) | Agents run inside Incus containers (inside an OrbStack VM on macOS, directly on host on Linux). No host filesystem access whatsoever. |
+| **Host filesystem** (macOS / Linux) | Agents run inside Incus containers (inside an OrbStack VM on macOS, directly on host on Linux). No host filesystem access whatsoever (unless `--local-dir` is used to explicitly mount a directory). |
 | **Per-container isolation** | Each container is a separate Incus system container with its own filesystem, process tree, and network namespace. At the network level, `security.port_isolation=true` on the default profile sets the kernel's `IFLA_BRPORT_ISOLATED` flag on each container's veth — containers can only communicate with the bridge gateway (for DNS/DHCP/NAT), not with each other. Combined with `security.ipv4_filtering` and `security.ipv6_filtering` for anti-spoofing. |
 | **SSH private keys** | Private keys live only in ssh-agent memory in the sandbox environment (VM on macOS, host on Linux). Key material never touches the container's disk. Each container has its own ssh-agent process — containers cannot see each other's keys. Keys are automatically cleaned up from GitHub when a container is destroyed with `--rm`. |
 | **Deploy key scoping** | Each deploy key is scoped to a single GitHub repository. A compromised container cannot access other repos. |
@@ -676,6 +826,7 @@ Or create a project-specific file and pass it with `--domains-file`.
 | **VM/Host kernel access** | All containers share the same kernel (OrbStack VM on macOS, host on Linux). A container escape (unlikely but theoretically possible) would give access to the VM (macOS) or host (Linux). On macOS, the VM provides an additional isolation boundary. |
 | **Env var exposure** | Environment variables injected via `~/.sandbox/env` or `--env` are written to `/etc/profile.d/sandbox-env.sh` inside the container. An agent can read them. This is by design (agents need API keys to function), but be aware. |
 | **Deploy key write access** | Deploy keys are created with `-w` (write) access. An agent can push to the repo it was created for. |
+| **Local directory mounts** | When `--local-dir` is used, the container has read/write access to the mounted host directory. Changes made by the agent are immediately visible on the host. |
 | **HTTPS traffic content** | Without `--restrict-domains`, egress filtering allows all HTTPS traffic — agents can reach any HTTPS endpoint. Use `--restrict-domains` to limit HTTPS egress to an approved domain allowlist (see [Domain-Based Egress Filtering](#domain-based-egress-filtering)). |
 | **Persistent container state** | Stopping a container preserves its filesystem. Anything the agent wrote remains until the container is destroyed with `--rm`. |
 
@@ -847,6 +998,18 @@ ip -4 route show default
 
 # If missing, add one (adjust interface name)
 sudo ip route add default via <gateway-ip> dev <interface>
+```
+
+#### Sudo Prompts in Non-Interactive Mode
+
+**Symptom:** `sandbox-start` or `sandbox-setup` fails with "sudo: a terminal is required".
+
+**Fix:** Ensure passwordless sudo is configured for the required commands:
+
+```bash
+sudo tee /etc/sudoers.d/sandbox << 'EOF'
+your-username ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/bin/squid, /usr/bin/systemctl
+EOF
 ```
 
 ## Testing
