@@ -22,7 +22,7 @@ if [[ "$SANDBOX_PLATFORM" == "macos" ]]; then
 else
   # Cache sudo credentials for privileged setup steps (iptables, squid, apt)
   info "This script needs sudo for system setup (iptables, squid, apt)..."
-  sudo -v || die "sudo access required for setup"
+  sudo -v 2>/dev/null || warn "Could not cache sudo credentials — privileged steps may prompt or fail"
 fi
 require_command gh
 require_command ssh-keygen
@@ -47,13 +47,11 @@ fi
 # ── Step 3: Install Incus ──────────────────────────────────────────
 echo ""
 info "Step 2: Installing Incus..."
+if command -v incus &>/dev/null; then
+  ok "Incus already installed: $(incus version)"
+else
 vm_run_privileged bash << 'INCUS_SETUP'
 set -e
-
-if command -v incus &>/dev/null; then
-  echo "Incus already installed: $(incus version)"
-  exit 0
-fi
 
 apt-get update
 apt-get install -y gnupg curl
@@ -100,6 +98,7 @@ INIT
 echo "Incus initialized: $(incus version)"
 INCUS_SETUP
 ok "Incus ready"
+fi
 
 # ── Step 3b: Container network isolation ──────────────────────────
 echo ""
@@ -115,37 +114,19 @@ ok "Container isolation active (port_isolation + ipv4/ipv6 filtering)"
 echo ""
 info "Step 4: Applying egress filtering rules..."
 _OIFACE="${OUTBOUND_IFACE}"
-vm_run_privileged bash << EGRESS
-set -e
-
-if iptables -L FORWARD -n 2>/dev/null | grep -q "incusbr0.*DROP"; then
-  echo "Egress rules already applied"
-  exit 0
+if vm_exec "sudo iptables -L FORWARD -n 2>/dev/null | grep -q 'incusbr0.*DROP'"; then
+  ok "Egress rules already applied"
+else
+  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -j DROP"
+  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p udp --dport 53 -j ACCEPT"
+  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 53 -j ACCEPT"
+  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 80 -j ACCEPT"
+  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 443 -j ACCEPT"
+  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p udp --dport 443 -j ACCEPT"
+  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 22 -j ACCEPT"
+  vm_exec "sudo iptables -I FORWARD -i '${_OIFACE}' -o incusbr0 -m state --state ESTABLISHED,RELATED -j ACCEPT"
+  ok "Egress filtering active"
 fi
-
-# Default deny outbound from containers
-iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -j DROP
-
-# Allow DNS (TCP + UDP)
-iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p udp --dport 53 -j ACCEPT
-iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 53 -j ACCEPT
-
-# Allow HTTP
-iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 80 -j ACCEPT
-
-# Allow HTTPS (TCP + UDP for HTTP/3 QUIC)
-iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 443 -j ACCEPT
-iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p udp --dport 443 -j ACCEPT
-
-# Allow SSH (git over SSH)
-iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 22 -j ACCEPT
-
-# Allow established/related return traffic
-iptables -I FORWARD -i '${_OIFACE}' -o incusbr0 -m state --state ESTABLISHED,RELATED -j ACCEPT
-
-echo "Egress rules applied"
-EGRESS
-ok "Egress filtering active"
 
 # ── Step 3b: Domain filtering proxy (Squid) ───────────────────────
 echo ""

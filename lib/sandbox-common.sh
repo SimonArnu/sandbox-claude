@@ -422,13 +422,12 @@ parse_domains_file() {
 
 # Install squid-openssl in the VM if not present
 ensure_squid_installed() {
+  if command -v squid &>/dev/null; then
+    echo "Squid already installed"
+    return 0
+  fi
   vm_run_privileged bash << 'SQUID_INSTALL'
 set -e
-if command -v squid &>/dev/null; then
-  echo "Squid already installed"
-  exit 0
-fi
-
 apt-get update
 apt-get install -y squid-openssl ssl-cert
 mkdir -p /etc/squid/sandbox/containers
@@ -438,6 +437,10 @@ SQUID_INSTALL
 
 # Write base squid.conf with peek/splice SNI filtering config
 deploy_squid_config() {
+  if [[ -f /etc/squid/squid.conf ]] && grep -q "sandbox-proxy" /etc/squid/squid.conf 2>/dev/null; then
+    echo "Squid config already deployed"
+    return 0
+  fi
   vm_run_privileged bash << 'SQUID_CONF'
 set -e
 
