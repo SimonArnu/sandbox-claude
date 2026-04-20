@@ -25,20 +25,16 @@ teardown() {
 
 # ── vm_run: Linux path ──────────────────────────────────────────────
 
-@test "vm_run: Linux prepends sudo to command" {
+@test "vm_run: Linux runs command directly without sudo" {
   SANDBOX_PLATFORM="linux"
-  _mock_cmd sudo
-  PATH="${TEST_TMPDIR}/bin:${PATH}" vm_run echo hello
-  run cat "$MOCK_LOG"
-  assert_output --partial "sudo echo hello"
+  run vm_run echo hello
+  assert_output "hello"
 }
 
-@test "vm_run: Linux passes all arguments through sudo" {
+@test "vm_run: Linux passes all arguments through" {
   SANDBOX_PLATFORM="linux"
-  _mock_cmd sudo
-  PATH="${TEST_TMPDIR}/bin:${PATH}" vm_run ls -la /tmp
-  run cat "$MOCK_LOG"
-  assert_output --partial "sudo ls -la /tmp"
+  run vm_run echo -n test123
+  assert_output "test123"
 }
 
 # ── vm_run: macOS path ──────────────────────────────────────────────
@@ -63,10 +59,8 @@ teardown() {
 
 @test "vm_exec: delegates to vm_run with bash -c on Linux" {
   SANDBOX_PLATFORM="linux"
-  _mock_cmd sudo
-  PATH="${TEST_TMPDIR}/bin:${PATH}" vm_exec "echo hello world"
-  run cat "$MOCK_LOG"
-  assert_output --partial "sudo bash -c echo hello world"
+  run vm_exec "echo hello world"
+  assert_output "hello world"
 }
 
 @test "vm_exec: delegates to vm_run with bash -c on macOS" {

@@ -99,11 +99,23 @@ require_container() {
 }
 
 # ── VM execution abstraction ──────────────────────────────────────
-# vm_run: Execute a command as root in the sandbox VM (exec-style, separate args).
+# vm_run: Execute a command in the sandbox VM (exec-style, separate args).
 #   Supports stdin piping and heredocs.
-#   macOS: orb run -m sandbox sudo <args>
-#   Linux: sudo <args>
+#   macOS: orb run -m sandbox sudo <args> (root inside VM)
+#   Linux: <args> (no sudo — incus works via group membership)
 vm_run() {
+  if [[ "$SANDBOX_PLATFORM" == "macos" ]]; then
+    orb run -m "${SANDBOX_MACHINE}" sudo "$@"
+  else
+    "$@"
+  fi
+}
+
+# vm_run_privileged: Like vm_run, but always runs as root.
+#   Use for system operations (iptables, apt, squid, systemctl).
+#   macOS: same as vm_run (already runs as root in VM)
+#   Linux: sudo <args>
+vm_run_privileged() {
   if [[ "$SANDBOX_PLATFORM" == "macos" ]]; then
     orb run -m "${SANDBOX_MACHINE}" sudo "$@"
   else
@@ -111,9 +123,9 @@ vm_run() {
   fi
 }
 
-# vm_exec: Execute a shell command string as root in the sandbox VM (eval-style).
+# vm_exec: Execute a shell command string in the sandbox VM (eval-style).
 #   Use when the command contains pipes, redirects, or chained operators.
-#   Delegates to vm_run, which handles sudo.
+#   Delegates to vm_run, which handles platform differences.
 vm_exec() {
   vm_run bash -c "$1"
 }
@@ -410,7 +422,7 @@ parse_domains_file() {
 
 # Install squid-openssl in the VM if not present
 ensure_squid_installed() {
-  vm_run bash << 'SQUID_INSTALL'
+  vm_run_privileged bash << 'SQUID_INSTALL'
 set -e
 if command -v squid &>/dev/null; then
   echo "Squid already installed"
@@ -426,12 +438,18 @@ SQUID_INSTALL
 
 # Write base squid.conf with peek/splice SNI filtering config
 deploy_squid_config() {
-  vm_run bash << 'SQUID_CONF'
+  vm_run_privileged bash << 'SQUID_CONF'
 set -e
 
 CONF_DIR="/etc/squid/sandbox"
 CERT_DIR="/etc/squid/ssl"
 mkdir -p "$CONF_DIR/containers" "$CERT_DIR"
+# Make containers dir writable by the calling user so runtime scripts
+# can manage per-container domain filter files without sudo
+if [ -n "${SUDO_USER:-}" ]; then
+  chown "${SUDO_USER}:" "$CONF_DIR/containers"
+fi
+chmod 775 "$CONF_DIR/containers"
 # Ensure at least one .conf file exists so the glob include always succeeds
 touch "$CONF_DIR/containers/000-placeholder.conf"
 
@@ -523,14 +541,14 @@ ssl_bump splice ${container}_src ${container}_domains
 ACL_EOF
   "
 
-  vm_exec "squid -k reconfigure 2>/dev/null || systemctl reload squid 2>/dev/null || true"
+  vm_exec "sudo squid -k reconfigure 2>/dev/null || sudo systemctl reload squid 2>/dev/null || true"
 }
 
 # Remove per-container Squid ACL and domains file, then reload
 cleanup_container_domain_filter() {
   local container="$1"
   vm_exec "
-    sudo rm -f /etc/squid/sandbox/containers/${container}.conf \
+    rm -f /etc/squid/sandbox/containers/${container}.conf \
           /etc/squid/sandbox/containers/${container}.domains
     sudo squid -k reconfigure 2>/dev/null || sudo systemctl reload squid 2>/dev/null || true
   " 2>/dev/null || true
