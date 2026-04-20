@@ -22,6 +22,7 @@ LOCAL_DIR=""
 MCP_SERVERS=()
 PLUGIN_MARKETPLACES=()
 PLUGIN_INSTALLS=()
+EXTRA_MOUNTS=()
 
 # Track which values were explicitly set via CLI flags
 declare -A CLI_SET=()
@@ -50,6 +51,7 @@ load_config() {
       env)              EXTRA_ENVS+=("$value") ;;
       env-file)         ENV_FILES+=("$value") ;;
       mcp)              MCP_SERVERS+=("$value") ;;
+      mount)            EXTRA_MOUNTS+=("$value") ;;
       plugin-marketplace) PLUGIN_MARKETPLACES+=("$value") ;;
       plugin)           PLUGIN_INSTALLS+=("$value") ;;
       *)                warn "Unknown config key in ${file}: ${key}" ;;
@@ -152,6 +154,7 @@ while [[ $# -gt 0 ]]; do
     --env-file)         [[ -n "${2:-}" ]] || die "--env-file requires a value"; ENV_FILES+=("$2"); shift 2 ;;
     --local-dir)        [[ -n "${2:-}" ]] || die "--local-dir requires a value"; LOCAL_DIR="$2"; CLI_SET[local-dir]=1; shift 2 ;;
     --mcp)              [[ -n "${2:-}" ]] || die "--mcp requires a value"; MCP_SERVERS+=("$2"); CLI_SET[mcp]=1; shift 2 ;;
+    --mount)            [[ -n "${2:-}" ]] || die "--mount requires a value"; EXTRA_MOUNTS+=("$2"); shift 2 ;;
     --restrict-domains) RESTRICT_DOMAINS="yes"; CLI_SET[restrict-domains]=1; shift ;;
     --domains-file)     [[ -n "${2:-}" ]] || die "--domains-file requires a value"; RESTRICT_DOMAINS="yes"; DOMAINS_FILE="$2"; CLI_SET[domains-file]=1; shift 2 ;;
     --*)                die "Unknown flag: $1" ;;
@@ -221,6 +224,13 @@ if [[ -n "$LOCAL_DIR" ]]; then
   [[ -d "$LOCAL_DIR" ]] || die "Not a directory: ${LOCAL_DIR}"
 fi
 
+# ── Validate --mount entries ──────────────────────────────────────
+for m in "${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}"; do
+  [[ "$m" == *:* ]] || die "Invalid --mount format '${m}'. Expected source:dest"
+  local_src="${m%%:*}"
+  [[ -d "$local_src" ]] || die "Mount source not found: ${local_src}"
+done
+
 # ── Check for existing container (restart-or-create) ──────────────
 require_sandbox
 CONTAINER=$(container_name "$NAME")
@@ -246,6 +256,7 @@ if [[ "$CONTAINER_STATE" == "STOPPED" ]]; then
   [[ -n "$BRANCH" ]]       && IMMUTABLE_ERROR+="  --branch (cannot change branch on restart)\n"
   [[ -n "$SLOT" ]]         && IMMUTABLE_ERROR+="  --slot (cannot change slot on restart)\n"
   [[ -n "$LOCAL_DIR" ]]    && IMMUTABLE_ERROR+="  --local-dir (cannot change mount on restart)\n"
+  [[ ${#EXTRA_MOUNTS[@]} -gt 0 ]] && IMMUTABLE_ERROR+="  --mount (cannot change mounts on restart)\n"
   if [[ -n "$IMMUTABLE_ERROR" ]]; then
     die "Cannot change these flags on restart (destroy and recreate instead):\n${IMMUTABLE_ERROR}Use 'sandbox-stop ${NAME} --rm' first, then 'sandbox-start ${NAME} ...' to recreate."
   fi
@@ -408,6 +419,20 @@ vm_exec "
 if [[ -n "$LOCAL_DIR" ]]; then
   info "Mounting ${LOCAL_DIR} → ${WORKSPACE_DIR}..."
   vm_exec "incus config device add ${CONTAINER} workspace disk source=${LOCAL_DIR} path=${WORKSPACE_DIR} shift=true"
+fi
+
+# Extra bind-mounts via --mount
+if [[ ${#EXTRA_MOUNTS[@]} -gt 0 ]]; then
+  _mount_idx=0
+  for m in "${EXTRA_MOUNTS[@]}"; do
+    _src="${m%%:*}"
+    _dest="${m#*:}"
+    _src="$(cd "$_src" && pwd)"
+    _device="mount-${_mount_idx}"
+    info "Mounting ${_src} → ${_dest}..."
+    vm_exec "incus config device add ${CONTAINER} ${_device} disk source=${_src} path=${_dest} shift=true"
+    _mount_idx=$((_mount_idx + 1))
+  done
 fi
 
 # Start
