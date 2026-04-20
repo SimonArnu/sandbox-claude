@@ -15,6 +15,7 @@ SLOT=""
 CPU=""
 MEMORY=""
 EXTRA_ENVS=()
+ENV_FILES=()
 RESTRICT_DOMAINS=""
 DOMAINS_FILE=""
 LOCAL_DIR=""
@@ -112,6 +113,7 @@ while [[ $# -gt 0 ]]; do
     --cpu)              [[ -n "${2:-}" ]] || die "--cpu requires a value"; CPU="$2"; shift 2 ;;
     --memory)           [[ -n "${2:-}" ]] || die "--memory requires a value"; MEMORY="$2"; shift 2 ;;
     --env)              [[ -n "${2:-}" ]] || die "--env requires a value"; EXTRA_ENVS+=("$2"); shift 2 ;;
+    --env-file)         [[ -n "${2:-}" ]] || die "--env-file requires a value"; ENV_FILES+=("$2"); shift 2 ;;
     --local-dir)        [[ -n "${2:-}" ]] || die "--local-dir requires a value"; LOCAL_DIR="$2"; shift 2 ;;
     --mcp)              [[ -n "${2:-}" ]] || die "--mcp requires a value"; MCP_SERVERS+=("$2"); shift 2 ;;
     --restrict-domains) RESTRICT_DOMAINS="yes"; shift ;;
@@ -131,6 +133,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$NAME" ]] || die "Usage: sandbox-start <name> [repo-url] [flags]"
+
+# ── Read --env-file(s), then append --env overrides on top ────────
+if [[ ${#ENV_FILES[@]} -gt 0 ]]; then
+  FILE_ENVS=()
+  for ef in "${ENV_FILES[@]}"; do
+    [[ -f "$ef" ]] || die "Env file not found: ${ef}"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ ^[[:space:]]*# || -z "${line// }" ]] && continue
+      FILE_ENVS+=("$line")
+    done < "$ef"
+  done
+  # env-file first, then --env overrides (last write wins in profile.d)
+  EXTRA_ENVS=("${FILE_ENVS[@]}" ${EXTRA_ENVS[@]+"${EXTRA_ENVS[@]}"})
+fi
 
 # ── Validate --local-dir ──────────────────────────────────────────
 if [[ -n "$LOCAL_DIR" ]]; then
