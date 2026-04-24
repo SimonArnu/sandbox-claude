@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# ABOUTME: Host-allowlisted wrapper around curl for use inside Claude Code sandboxes.
+# ABOUTME: Allows curl without a permission prompt only for hosts in SAFE_CURL_ALLOWED_HOSTS.
+
+set -u
+
+die() {
+  echo "safe-curl: $*" >&2
+  exit 1
+}
+
+if [[ -z "${SAFE_CURL_ALLOWED_HOSTS:-}" ]]; then
+  die "SAFE_CURL_ALLOWED_HOSTS is not set; refusing to proxy curl"
+fi
+
+# Parse comma-separated allowlist into an array, trimming whitespace around entries.
+IFS=',' read -ra _allowed <<<"$SAFE_CURL_ALLOWED_HOSTS"
+declare -a ALLOWED_HOSTS=()
+for h in "${_allowed[@]}"; do
+  h="${h## }"; h="${h%% }"
+  [[ -n "$h" ]] && ALLOWED_HOSTS+=("$h")
+done
+[[ ${#ALLOWED_HOSTS[@]} -gt 0 ]] || die "SAFE_CURL_ALLOWED_HOSTS is empty; refusing to proxy curl"
+
+host_from_url() {
+  local url="$1" rest host
+  [[ "$url" =~ ^https?:// ]] || return 1
+  rest="${url#*://}"
+  rest="${rest%%/*}"
+  rest="${rest%%\?*}"
+  host="${rest##*@}"   # strip userinfo
+  host="${host%%:*}"   # strip port
+  [[ -n "$host" ]] || return 1
+  printf '%s' "$host"
+}
+
+host_allowed() {
+  local host="$1" allowed
+  for allowed in "${ALLOWED_HOSTS[@]}"; do
+    [[ "$host" == "$allowed" ]] && return 0
+  done
+  return 1
+}
+
+declare -a URLS=()
+declare -a ARGS=("$@")
+i=0
+while [[ $i -lt ${#ARGS[@]} ]]; do
+  arg="${ARGS[$i]}"
+  case "$arg" in
+    --url)
+      next="${ARGS[$((i+1))]:-}"
+      [[ -n "$next" ]] && URLS+=("$next")
+      i=$((i+2))
+      continue
+      ;;
+    --url=*)
+      URLS+=("${arg#--url=}")
+      ;;
+    http://*|https://*)
+      URLS+=("$arg")
+      ;;
+  esac
+  i=$((i+1))
+done
+
+[[ ${#URLS[@]} -gt 0 ]] || die "no URL found in arguments; use 'curl' directly for non-URL invocations"
+
+for url in "${URLS[@]}"; do
+  if ! host=$(host_from_url "$url"); then
+    die "could not parse host from URL: $url"
+  fi
+  if ! host_allowed "$host"; then
+    echo "safe-curl: host '$host' not in SAFE_CURL_ALLOWED_HOSTS ($SAFE_CURL_ALLOWED_HOSTS)" >&2
+    echo "safe-curl: fall back to 'curl' (will trigger a permission prompt)" >&2
+    exit 3
+  fi
+done
+
+exec /usr/bin/curl "$@"

@@ -544,6 +544,45 @@ with open(path, \"w\") as f:
   ok "Notification hooks installed"
 fi
 
+# ── safe-curl wrapper ──────────────────────────────────────────────
+SAFE_CURL="${SCRIPT_DIR}/../lib/safe-curl"
+if [[ -f "$SAFE_CURL" ]]; then
+  info "Installing safe-curl wrapper..."
+  vm_run incus file push "$SAFE_CURL" "${CONTAINER}/usr/local/bin/safe-curl" \
+    --uid=0 --gid=0 --mode=755
+  ok "safe-curl installed"
+fi
+
+# ── Merge host ~/.sandbox/settings.json into container settings ───
+SANDBOX_SETTINGS="${HOME}/.sandbox/settings.json"
+if [[ -f "$SANDBOX_SETTINGS" ]]; then
+  info "Merging sandbox settings.json..."
+  vm_run incus file push "$SANDBOX_SETTINGS" "${CONTAINER}/tmp/sandbox-settings.json" \
+    --uid=${SANDBOX_UID} --gid=${SANDBOX_GID} --mode=644
+
+  vm_run incus exec "${CONTAINER}" --user ${SANDBOX_UID} --group ${SANDBOX_GID} --env HOME=${SANDBOX_USER_HOME} -- \
+    bash -c 'python3 -c "
+import json, os, sys
+target = os.path.expanduser(\"~/.claude/settings.json\")
+try:
+    with open(target) as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
+with open(\"/tmp/sandbox-settings.json\") as f:
+    overlay = json.load(f)
+owned = {\"mcpServers\", \"hooks\"}
+for key, value in overlay.items():
+    if key in owned:
+        print(f\"warn: ignoring key {key!r} from ~/.sandbox/settings.json (owned by dedicated injection step)\", file=sys.stderr)
+        continue
+    settings[key] = value
+with open(target, \"w\") as f:
+    json.dump(settings, f, indent=2)
+" && rm -f /tmp/sandbox-settings.json'
+  ok "Sandbox settings merged"
+fi
+
 # ── Domain filtering ───────────────────────────────────────────────
 if [[ "$RESTRICT_DOMAINS" == "yes" ]]; then
   info "Applying domain-based egress filtering..."
