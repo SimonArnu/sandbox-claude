@@ -246,6 +246,12 @@ fi
 require_sandbox
 CONTAINER=$(container_name "$NAME")
 
+# Self-heal egress rules for the current outbound interface. The host's
+# default route may have changed since sandbox-setup ran (laptop roamed
+# between wifi/ethernet/VPN), in which case the original rules are tied
+# to a now-irrelevant interface and containers can't reach the internet.
+ensure_egress_rules_for_iface "${OUTBOUND_IFACE}"
+
 CONTAINER_STATE=""
 if vm_exec "incus info ${CONTAINER} &>/dev/null" 2>/dev/null; then
   CONTAINER_STATE=$(vm_exec "incus info ${CONTAINER} 2>/dev/null | grep 'Status:' | awk '{print \$2}'" || true)
