@@ -234,6 +234,14 @@ for m in "${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}"; do
   [[ -d "$local_src" ]] || die "Mount source not found: ${local_src}"
 done
 
+# ── Require an explicit SSH key choice ────────────────────────────
+# Force the user to pick a key consciously rather than letting the system
+# fall back to whatever happens to be on disk — keys with broad permissions
+# could otherwise leak into agent containers.
+if [[ -z "$SSH_KEY" ]]; then
+  die "No SSH key configured. Set 'ssh-key=<path>' in ~/.sandbox/config or .sandbox.conf, or pass --ssh-key <path>."
+fi
+
 # ── Check for existing container (restart-or-create) ──────────────
 require_sandbox
 CONTAINER=$(container_name "$NAME")
