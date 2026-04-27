@@ -255,6 +255,19 @@ if [[ "$CONTAINER_STATE" == "RUNNING" ]]; then
   die "Container '${CONTAINER}' is already running. Use 'sandbox ${NAME}' to connect."
 fi
 
+# Surface silent failures: under `set -euo pipefail` any uncaught non-zero
+# exits the script with no output, leaving a half-configured container and
+# no SSH config entry. The trap fires unless we mark completion.
+SANDBOX_START_OK=0
+sandbox_start_exit_trap() {
+  local rc=$?
+  [[ "$SANDBOX_START_OK" == "1" ]] && return
+  [[ $rc -eq 0 ]] && return
+  warn "sandbox-start failed (exit ${rc}) at line ${BASH_LINENO[0]:-?} — container may be partially configured"
+  warn "Run 'sandbox-stop ${NAME} --rm' to clean up, then retry."
+}
+trap sandbox_start_exit_trap EXIT
+
 if [[ "$CONTAINER_STATE" == "STOPPED" ]]; then
   # ── Restart path: reconfigure in-place ────────────────────────────
   info "Restarting stopped container '${CONTAINER}'..."
@@ -325,6 +338,7 @@ if [[ "$CONTAINER_STATE" == "STOPPED" ]]; then
   fi
 
   print_connection_summary "$CONTAINER" "$NAME" "restarted"
+  SANDBOX_START_OK=1
   exit 0
 fi
 
@@ -635,3 +649,4 @@ fi
 
 # ── Done ────────────────────────────────────────────────────────────
 print_connection_summary "$CONTAINER" "$NAME" "ready"
+SANDBOX_START_OK=1
