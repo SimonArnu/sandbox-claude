@@ -130,6 +130,37 @@ vm_exec() {
   vm_run bash -c "$1"
 }
 
+# ── Egress rules ──────────────────────────────────────────────────
+# Install the FORWARD rules that let containers on incusbr0 reach the
+# outside world via the given egress interface, if not already present.
+#
+# Idempotent per interface: rules for previously-used interfaces are left
+# in place (harmless when those interfaces are down) so roaming back to
+# them stays fast. We never auto-remove rules.
+ensure_egress_rules_for_iface() {
+  local iface="$1"
+  if [[ -z "$iface" ]]; then
+    warn "No outbound interface detected — skipping egress rule install (container will have no internet)"
+    return 0
+  fi
+
+  if vm_exec "sudo iptables -C FORWARD -i incusbr0 -o '${iface}' -j DROP 2>/dev/null"; then
+    return 0
+  fi
+
+  info "Installing egress rules for ${iface}..."
+  vm_exec "
+    sudo iptables -I FORWARD -i incusbr0 -o '${iface}' -j DROP &&
+    sudo iptables -I FORWARD -i incusbr0 -o '${iface}' -p udp --dport 53 -j ACCEPT &&
+    sudo iptables -I FORWARD -i incusbr0 -o '${iface}' -p tcp --dport 53 -j ACCEPT &&
+    sudo iptables -I FORWARD -i incusbr0 -o '${iface}' -p tcp --dport 80 -j ACCEPT &&
+    sudo iptables -I FORWARD -i incusbr0 -o '${iface}' -p tcp --dport 443 -j ACCEPT &&
+    sudo iptables -I FORWARD -i incusbr0 -o '${iface}' -p udp --dport 443 -j ACCEPT &&
+    sudo iptables -I FORWARD -i incusbr0 -o '${iface}' -p tcp --dport 22 -j ACCEPT &&
+    sudo iptables -I FORWARD -i '${iface}' -o incusbr0 -m state --state ESTABLISHED,RELATED -j ACCEPT
+  "
+}
+
 # ── Container naming ───────────────────────────────────────────────
 container_name() {
   local name="$1"

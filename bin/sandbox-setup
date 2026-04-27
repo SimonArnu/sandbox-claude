@@ -113,20 +113,8 @@ ok "Container isolation active (port_isolation + ipv4/ipv6 filtering)"
 # ── Step 4: Egress filtering ───────────────────────────────────────
 echo ""
 info "Step 4: Applying egress filtering rules..."
-_OIFACE="${OUTBOUND_IFACE}"
-if vm_exec "sudo iptables -L FORWARD -n 2>/dev/null | grep -q 'incusbr0.*DROP'"; then
-  ok "Egress rules already applied"
-else
-  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -j DROP"
-  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p udp --dport 53 -j ACCEPT"
-  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 53 -j ACCEPT"
-  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 80 -j ACCEPT"
-  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 443 -j ACCEPT"
-  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p udp --dport 443 -j ACCEPT"
-  vm_exec "sudo iptables -I FORWARD -i incusbr0 -o '${_OIFACE}' -p tcp --dport 22 -j ACCEPT"
-  vm_exec "sudo iptables -I FORWARD -i '${_OIFACE}' -o incusbr0 -m state --state ESTABLISHED,RELATED -j ACCEPT"
-  ok "Egress filtering active"
-fi
+ensure_egress_rules_for_iface "${OUTBOUND_IFACE}"
+ok "Egress filtering active for ${OUTBOUND_IFACE}"
 
 # ── Step 3b: Domain filtering proxy (Squid) ───────────────────────
 echo ""
